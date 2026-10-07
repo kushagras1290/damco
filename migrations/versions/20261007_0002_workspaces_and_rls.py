@@ -23,11 +23,8 @@ down_revision: str | None = "0001"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-APP_ROLE = "jobpulse_app"
 DEFAULT_WORKSPACE = uuid.UUID("00000000-0000-7000-8000-000000000001")
 CURRENT_WORKSPACE = sa.text("NULLIF(current_setting('app.workspace_id', true), '')::uuid")
-SYSTEM = "current_setting('app.system_scope', true) = 'on'"
-IN_WORKSPACE = "{column} = NULLIF(current_setting('app.workspace_id', true), '')::uuid"
 
 # table -> nullable workspace_id (catalogue rows visible to everyone)
 WORKSPACE_COLUMNS = {
@@ -39,45 +36,81 @@ WORKSPACE_COLUMNS = {
     "audit_events": False,
     "workflow_runs": True,
 }
-RLS_TABLES = {
-    # table: column holding the workspace id
-    "workspaces": "id",
-    "memberships": "workspace_id",
-    "source_subscriptions": "workspace_id",
-    "profile_jobs": "workspace_id",
-    **{table: "workspace_id" for table in WORKSPACE_COLUMNS},
-}
 PER_PROFILE_STATES = ("eligibility_checked", "enriched", "ranked", "notified", "rejected")
 
-
-def _policy_expression(table: str, column: str) -> str:
-    clauses = [SYSTEM, IN_WORKSPACE.format(column=column)]
-    if WORKSPACE_COLUMNS.get(table):
-        clauses.append(f"{column} IS NULL")
-    return " OR ".join(f"({clause})" for clause in clauses)
+# Role and RLS DDL are fixed literal SQL: identifiers cannot be bind parameters, so table names
+# are passed as a text[] array and quoted by PostgreSQL itself (format('%I')).
+CREATE_APP_ROLE = """
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'jobpulse_app') THEN
+        CREATE ROLE jobpulse_app NOLOGIN NOSUPERUSER NOBYPASSRLS;
+    END IF;
+END
+$$
+"""
+GRANT_APP_ROLE = (
+    # The login role must be able to SET ROLE to the app role (no-op for superusers).
+    "GRANT jobpulse_app TO CURRENT_USER",
+    "GRANT USAGE ON SCHEMA public TO jobpulse_app",
+    "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO jobpulse_app",
+    "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO jobpulse_app",
+    "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO jobpulse_app",
+    "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO jobpulse_app",
+)
+# Policy: system scope, or the row belongs to the transaction's workspace. workspaces is keyed
+# by id; workflow_runs also exposes catalogue runs (workspace_id IS NULL).
+ENABLE_RLS = r"""
+DO $$
+DECLARE
+    t text;
+    in_scope constant text := $q$current_setting('app.system_scope', true) = 'on'$q$;
+    workspace constant text := $q$NULLIF(current_setting('app.workspace_id', true), '')::uuid$q$;
+    expression text;
+BEGIN
+    FOREACH t IN ARRAY ARRAY[
+        'workspaces', 'memberships', 'source_subscriptions', 'profile_jobs', 'profiles',
+        'eligibility_decisions', 'match_scores', 'notifications', 'applications', 'audit_events',
+        'workflow_runs'
+    ] LOOP
+        expression := CASE t
+            WHEN 'workspaces' THEN format('(%s) OR (id = %s)', in_scope, workspace)
+            WHEN 'workflow_runs' THEN
+                format('(%s) OR (workspace_id = %s) OR (workspace_id IS NULL)', in_scope, workspace)
+            ELSE format('(%s) OR (workspace_id = %s)', in_scope, workspace)
+        END;
+        EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+        EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+        EXECUTE format(
+            'CREATE POLICY tenant_isolation ON %I USING (%s) WITH CHECK (%s)', t, expression, expression
+        );
+    END LOOP;
+END
+$$
+"""
+DISABLE_RLS = """
+DO $$
+DECLARE
+    t text;
+BEGIN
+    FOREACH t IN ARRAY ARRAY[
+        'workspaces', 'memberships', 'source_subscriptions', 'profile_jobs', 'profiles',
+        'eligibility_decisions', 'match_scores', 'notifications', 'applications', 'audit_events',
+        'workflow_runs'
+    ] LOOP
+        EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', t);
+        EXECUTE format('ALTER TABLE %I NO FORCE ROW LEVEL SECURITY', t);
+        EXECUTE format('ALTER TABLE %I DISABLE ROW LEVEL SECURITY', t);
+    END LOOP;
+END
+$$
+"""
 
 
 def _create_app_role() -> None:
-    op.execute(
-        f"""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{APP_ROLE}') THEN
-                CREATE ROLE {APP_ROLE} NOLOGIN NOSUPERUSER NOBYPASSRLS;
-            END IF;
-        END
-        $$
-        """
-    )
-    # The login role must be able to SET ROLE to the app role (no-op for superusers).
-    op.execute(f"GRANT {APP_ROLE} TO CURRENT_USER")
-    op.execute(f"GRANT USAGE ON SCHEMA public TO {APP_ROLE}")
-    op.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {APP_ROLE}")
-    op.execute(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {APP_ROLE}")
-    op.execute(
-        f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {APP_ROLE}"
-    )
-    op.execute(f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO {APP_ROLE}")
+    op.execute(CREATE_APP_ROLE)
+    for statement in GRANT_APP_ROLE:
+        op.execute(statement)
 
 
 def _create_tables() -> None:
@@ -230,26 +263,15 @@ def _backfill() -> None:
     )
 
 
-def _enable_rls() -> None:
-    for table, column in RLS_TABLES.items():
-        op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
-        op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
-        expression = _policy_expression(table, column)
-        op.execute(f"CREATE POLICY tenant_isolation ON {table} USING ({expression}) WITH CHECK ({expression})")
-
-
 def upgrade() -> None:
     _create_tables()
     _backfill()
     _create_app_role()  # after the tables exist so ALL TABLES grants cover them
-    _enable_rls()
+    op.execute(ENABLE_RLS)
 
 
 def downgrade() -> None:
-    for table in RLS_TABLES:
-        op.execute(f"DROP POLICY IF EXISTS tenant_isolation ON {table}")
-        op.execute(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY")
-        op.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
+    op.execute(DISABLE_RLS)
     op.execute(
         """
         UPDATE jobs j SET eligibility_status = pj.eligibility_status, match_score = pj.match_score,

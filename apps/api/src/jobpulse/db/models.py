@@ -242,9 +242,14 @@ class Job(Base):
     duplicate_of_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"))
     version: Mapped[int] = mapped_column(Integer, server_default="1")
     # Catalogue lifecycle only (discovered / duplicate / closed). Per-profile evaluation state
-    # lives in ProfileJob; the legacy jobs.eligibility_status / match_score columns are unused
-    # since migration 0002 and are dropped by the next contract migration.
+    # lives in ProfileJob.
     workflow_state: Mapped[str] = mapped_column(String(30), server_default="discovered")
+    # DEPRECATED since migration 0002 (expand/contract): never read or written - deferred so
+    # they are not even loaded. Dropped, with their indexes, by the next contract migration.
+    legacy_eligibility_status: Mapped[str] = mapped_column(
+        "eligibility_status", String(20), server_default="pending", deferred=True
+    )
+    legacy_match_score: Mapped[float | None] = mapped_column("match_score", Float, deferred=True)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIMENSIONS))
     embedding_hash: Mapped[str | None] = mapped_column(String(64))
     search_vector: Mapped[str] = mapped_column(
@@ -268,9 +273,11 @@ class Job(Base):
         Index("ix_jobs_normalized_location", "normalized_location"),
         Index("ix_jobs_remote_policy", "remote_policy"),
         Index("ix_jobs_seniority", "seniority"),
+        Index("ix_jobs_eligibility_status", "eligibility_status"),
         Index("ix_jobs_workflow_state", "workflow_state"),
         Index("ix_jobs_fingerprint", "fingerprint"),
         Index("ix_jobs_canonical_url", "canonical_url"),
+        Index("ix_jobs_match_score", "match_score"),
         Index("ix_jobs_search_vector", "search_vector", postgresql_using="gin"),
         Index(
             "ix_jobs_normalized_title_trgm",
@@ -284,6 +291,7 @@ class Job(Base):
             postgresql_using="hnsw",
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
+        CheckConstraint("eligibility_status IN ('pending','eligible','ineligible')", name="eligibility_status_valid"),
     )
 
 
