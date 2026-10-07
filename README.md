@@ -80,6 +80,15 @@ Writes require the `OWNER` role (JWT minted server-side by the web app). Anonymo
    0.10 freshness`; missing components are re-weighted transparently; every component is stored.
 4. **Notification** — once per job content version per channel (idempotent dedupe key).
 
+## Production deploy (opt-in)
+
+`.github/workflows/deploy.yml` runs after a green CI on `main` only when the repository
+variable `DEPLOY_ENABLED=true` is set. Before enabling it, provision Neon, Temporal Cloud,
+Cloudflare R2, Render (`render.yaml`) and Vercel, then add the `production` environment
+secrets: `DATABASE_URL`, `API_JWT_SECRET`, `RENDER_API_KEY`, `RENDER_API_SERVICE_ID`,
+`RENDER_WORKER_SERVICE_ID`, `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, and the
+variables `PRODUCTION_API_URL` / `PRODUCTION_WEB_URL` for smoke tests.
+
 ## Documentation
 
 - [Architecture](docs/architecture/overview.md)

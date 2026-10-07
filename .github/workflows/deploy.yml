@@ -18,7 +18,8 @@ concurrency:
 
 jobs:
   build-push:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    # Opt-in: set repository variable DEPLOY_ENABLED=true once production secrets exist.
+    if: ${{ vars.DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
