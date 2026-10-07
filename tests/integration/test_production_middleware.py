@@ -16,6 +16,7 @@ from redis.asyncio import Redis
 
 from jobpulse.api.deps import get_ctx, get_temporal
 from jobpulse.core.config import Settings
+from jobpulse.db.models import DEFAULT_WORKSPACE_ID
 from jobpulse.main import create_app
 from jobpulse.services.context import AppContext
 from tests.auth_helpers import make_token
@@ -163,8 +164,10 @@ async def test_dashboard_is_cached_in_redis(redis_settings: Settings, ctx: AppCo
     assert first.json() == second.json()
     redis = Redis.from_url(redis_url)
     try:
-        assert await redis.exists("jp:cache:dashboard:v1") == 1
-        assert 0 < await redis.pttl("jp:cache:dashboard:v1") <= 5000
+        keys = [key.decode() async for key in redis.scan_iter("jp:cache:dashboard:*")]
+        # Scoped per workspace + profile: a global key would serve one tenant's data to another.
+        assert keys == [f"jp:cache:dashboard:v2:{DEFAULT_WORKSPACE_ID}:{keys[0].rsplit(':', 1)[1]}"]
+        assert 0 < await redis.pttl(keys[0]) <= 5000
     finally:
         await redis.aclose()
     redis_dep = next(dep for dep in status["dependencies"] if dep["name"] == "redis")

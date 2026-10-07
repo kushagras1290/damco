@@ -8,6 +8,7 @@ still succeeds: the worker starts polling for every enabled source when it boots
 from __future__ import annotations
 
 import sys
+import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -21,15 +22,20 @@ from pydantic import ValidationError as PydanticValidationError
 from jobpulse.core.aio import run
 from jobpulse.core.config import get_settings
 from jobpulse.core.logging import configure_logging
+from jobpulse.db.models import DEFAULT_WORKSPACE_ID
 from jobpulse.db.session import transaction
+from jobpulse.db.tenancy import workspace_scope
 from jobpulse.repositories.profiles import ProfileRepository
 from jobpulse.repositories.sources import SourceRepository
+from jobpulse.repositories.tenancy import SubscriptionRepository, WorkspaceRepository
 from jobpulse.services.context import AppContext
 from jobpulse.services.temporal import WorkflowServiceError, connect, ensure_polling
 from jobpulse_core.domain.models import EligibilityPolicy, Seniority, SourceDefinition, SourceKind
 
 logger = structlog.get_logger(__name__)
 MAX_SEED_BYTES = 256 * 1024
+DEFAULT_WORKSPACE_NAME = "Default"
+DEFAULT_WORKSPACE_SLUG = "default"
 
 
 class SeedProfile(BaseModel):
@@ -74,8 +80,13 @@ class SeedResult:
     enabled_source_ids: list[str] = field(default_factory=list)
 
 
-async def apply_seed(ctx: AppContext, seed: SeedFile) -> SeedResult:
-    async with transaction(ctx.sessions) as session:
+async def apply_seed(ctx: AppContext, seed: SeedFile, *, workspace_id: uuid.UUID = DEFAULT_WORKSPACE_ID) -> SeedResult:
+    """Seed one workspace (default: the Default workspace) and subscribe it to the sources."""
+    async with transaction(ctx.sessions, scope=workspace_scope(workspace_id)) as session:
+        await WorkspaceRepository(session).ensure(
+            workspace_id=workspace_id, name=DEFAULT_WORKSPACE_NAME, slug=DEFAULT_WORKSPACE_SLUG, plan="team"
+        )
+        subscriptions = SubscriptionRepository(session)
         if seed.profile is not None:
             profile = await ProfileRepository(session).get_or_create_primary()
             data = seed.profile
@@ -100,6 +111,7 @@ async def apply_seed(ctx: AppContext, seed: SeedFile) -> SeedResult:
                 raise ValueError(msg)
             existing = await repo.get_by_kind_name(definition.kind.value, item.name)
             if existing is not None:
+                await subscriptions.subscribe(existing.id)
                 if existing.enabled:
                     enabled.append(str(existing.id))
                 continue
@@ -113,6 +125,7 @@ async def apply_seed(ctx: AppContext, seed: SeedFile) -> SeedResult:
                 min_poll_interval_seconds=item.min_poll_interval_seconds,
                 max_poll_interval_seconds=3600,
             )
+            await subscriptions.subscribe(source.id)
             created.append(str(source.id))
             enabled.append(str(source.id))
     return SeedResult(profile_updated=seed.profile is not None, created_source_ids=created, enabled_source_ids=enabled)

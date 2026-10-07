@@ -11,6 +11,8 @@ with workflow.unsafe.imports_passed_through():
     from jobpulse_core import workflow_names as names
     from jobpulse_core.contracts import (
         DiscoveryResultSummary,
+        EvaluationTarget,
+        EvaluationTargets,
         FetchOutcome,
         JobRef,
         NormalizeInput,
@@ -29,6 +31,10 @@ with workflow.unsafe.imports_passed_through():
         SHORT_TIMEOUT,
         STORE_TIMEOUT,
     )
+
+
+# Replay guard: runs that started before per-profile fan-out keep their recorded history.
+TENANT_FANOUT_PATCH = "tenant-fanout-v1"
 
 
 def _failure(error: ActivityError) -> tuple[str, str, float | None]:
@@ -90,6 +96,31 @@ class SourceDiscoveryWorkflow:
         )
         return summary
 
+    async def _start_evaluations(self, stored: StoreOutcome, targets: list[EvaluationTarget]) -> int:
+        """One evaluation child per (job, subscribed profile); idempotent by workflow id."""
+        started = 0
+        for job_id in stored.jobs_to_evaluate:
+            content_hash = stored.content_hashes.get(job_id, "")
+            for target in targets:
+                try:
+                    await workflow.start_child_workflow(
+                        names.JOB_EVALUATION_WORKFLOW,
+                        JobRef(
+                            job_id=job_id,
+                            workspace_id=target.workspace_id,
+                            profile_id=target.profile_id,
+                            content_hash=content_hash or None,
+                        ),
+                        id=names.evaluation_workflow_id(job_id, target.profile_id, content_hash or "manual"),
+                        parent_close_policy=ParentClosePolicy.ABANDON,
+                        id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY,
+                    )
+                    started += 1
+                except WorkflowAlreadyStartedError:
+                    # Same job + profile + content already being evaluated: idempotent no-op.
+                    workflow.logger.info("evaluation already running", extra={"job_id": job_id})
+        return started
+
     async def _discover(self, ref: SourceRef) -> DiscoveryResultSummary:
         fetched: FetchOutcome = await workflow.execute_activity(
             names.FETCH_JOBS,
@@ -117,20 +148,15 @@ class SourceDiscoveryWorkflow:
         )
 
         started = 0
-        for job_id in stored.jobs_to_evaluate:
-            content_hash = stored.content_hashes.get(job_id, "")
-            try:
-                await workflow.start_child_workflow(
-                    names.JOB_EVALUATION_WORKFLOW,
-                    JobRef(job_id=job_id, content_hash=content_hash or None),
-                    id=names.evaluation_workflow_id(job_id, content_hash or "manual"),
-                    parent_close_policy=ParentClosePolicy.ABANDON,
-                    id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY,
-                )
-                started += 1
-            except WorkflowAlreadyStartedError:
-                # Same job+content already being evaluated: idempotent no-op.
-                workflow.logger.info("evaluation already running", extra={"job_id": job_id})
+        if stored.jobs_to_evaluate and workflow.patched(TENANT_FANOUT_PATCH):
+            fanout: EvaluationTargets = await workflow.execute_activity(
+                names.LIST_EVALUATION_TARGETS,
+                ref,
+                result_type=EvaluationTargets,
+                start_to_close_timeout=SHORT_TIMEOUT,
+                retry_policy=DEFAULT_RETRY,
+            )
+            started = await self._start_evaluations(stored, fanout.targets)
         return DiscoveryResultSummary(
             source_id=ref.source_id,
             status="completed",

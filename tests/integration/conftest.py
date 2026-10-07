@@ -15,6 +15,7 @@ from pydantic import SecretStr
 from sqlalchemy import text
 
 from jobpulse.core.config import Settings
+from jobpulse.db.models import DEFAULT_WORKSPACE_ID
 from jobpulse.services.context import AppContext
 from jobpulse_core.ingestion.http import HttpClientConfig, SafeHttpClient
 from tests.auth_helpers import JWKS_JSON, OWNER_ID
@@ -25,9 +26,12 @@ REDIS_IMAGE = "redis:8.8.3-alpine"
 REDIS_TEST_PASSWORD = "jobpulse-test"
 TRUNCATE = (
     "TRUNCATE audit_events, applications, notifications, match_scores, job_intelligence, "
-    "eligibility_decisions, job_versions, raw_snapshots, workflow_runs, jobs, source_checkpoints, "
-    "sources, companies, profiles, users RESTART IDENTITY CASCADE"
+    "eligibility_decisions, profile_jobs, job_versions, raw_snapshots, workflow_runs, jobs, "
+    "source_checkpoints, source_subscriptions, sources, companies, profiles, memberships, users, "
+    "workspaces RESTART IDENTITY CASCADE"
 )
+# Recreated after every truncate: single-workspace mode acts on it (as migration 0002 does).
+RESET_DEFAULT_WORKSPACE = "INSERT INTO workspaces (id, name, slug, plan) VALUES (:id, 'Default', 'default', 'team')"
 
 
 def _docker_available() -> bool:
@@ -144,6 +148,7 @@ async def ctx(settings: Settings) -> AsyncIterator[AppContext]:
     )
     async with context.engine.begin() as conn:
         await conn.execute(text(TRUNCATE))
+        await conn.execute(text(RESET_DEFAULT_WORKSPACE), {"id": DEFAULT_WORKSPACE_ID})
     try:
         yield context
     finally:

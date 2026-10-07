@@ -11,6 +11,7 @@ GET_SOURCE_SCHEDULE = "GetSourceScheduleActivity"
 FETCH_JOBS = "FetchJobsActivity"
 NORMALIZE_JOBS = "NormalizeJobsActivity"
 STORE_JOBS = "StoreJobsActivity"
+LIST_EVALUATION_TARGETS = "ListEvaluationTargetsActivity"
 RECORD_POLL = "RecordPollActivity"
 ELIGIBILITY = "EligibilityActivity"
 ENRICHMENT = "EnrichmentActivity"
@@ -51,5 +52,5 @@ def polling_workflow_id(source_id: str) -> str:
     return f"source-polling-{source_id}"
 
 
-def evaluation_workflow_id(job_id: str, content_hash: str) -> str:
-    return f"job-eval-{job_id}-{content_hash[:16]}"
+def evaluation_workflow_id(job_id: str, profile_id: str, content_hash: str) -> str:
+    return f"job-eval-{job_id}-{profile_id}-{content_hash[:16]}"

@@ -56,16 +56,20 @@ class DecisionRepository:
         await self._session.flush()
         return decision
 
-    async def eligibility_history(self, job_id: uuid.UUID) -> Sequence[EligibilityDecision]:
+    async def eligibility_history(self, job_id: uuid.UUID, profile_id: uuid.UUID) -> Sequence[EligibilityDecision]:
         statement = (
             select(EligibilityDecision)
-            .where(EligibilityDecision.job_id == job_id)
+            .where(EligibilityDecision.job_id == job_id, EligibilityDecision.profile_id == profile_id)
             .order_by(EligibilityDecision.created_at.desc())
         )
         return (await self._session.execute(statement)).scalars().all()
 
-    async def latest_eligibility(self, job_id: uuid.UUID, *, stage: str | None = None) -> EligibilityDecision | None:
-        statement = select(EligibilityDecision).where(EligibilityDecision.job_id == job_id)
+    async def latest_eligibility(
+        self, job_id: uuid.UUID, profile_id: uuid.UUID, *, stage: str | None = None
+    ) -> EligibilityDecision | None:
+        statement = select(EligibilityDecision).where(
+            EligibilityDecision.job_id == job_id, EligibilityDecision.profile_id == profile_id
+        )
         if stage is not None:
             statement = statement.where(EligibilityDecision.stage == stage)
         statement = statement.order_by(EligibilityDecision.created_at.desc()).limit(1)
@@ -206,21 +210,14 @@ class DecisionRepository:
         await self._session.flush()
         return score
 
-    async def latest_score(self, job_id: uuid.UUID) -> MatchScore | None:
+    async def latest_score(self, job_id: uuid.UUID, profile_id: uuid.UUID) -> MatchScore | None:
         statement = (
-            select(MatchScore).where(MatchScore.job_id == job_id).order_by(MatchScore.created_at.desc()).limit(1)
+            select(MatchScore)
+            .where(MatchScore.job_id == job_id, MatchScore.profile_id == profile_id)
+            .order_by(MatchScore.created_at.desc())
+            .limit(1)
         )
         return (await self._session.execute(statement)).scalar_one_or_none()
-
-    async def score_histogram(self) -> list[tuple[float, int]]:
-        bucket = func.width_bucket(Job.match_score, 0, 1.0001, 10)
-        statement = (
-            select(bucket, func.count(Job.id))
-            .where(Job.match_score.is_not(None), Job.closed_at.is_(None))
-            .group_by(bucket)
-            .order_by(bucket)
-        )
-        return [((int(row[0]) - 1) / 10, int(row[1])) for row in (await self._session.execute(statement)).all()]
 
     # ------------------------------------------------------------- notifications
 
@@ -258,8 +255,12 @@ class DecisionRepository:
             notification.sent_at = now
         await self._session.flush()
 
-    async def notifications_for_job(self, job_id: uuid.UUID) -> Sequence[Notification]:
-        statement = select(Notification).where(Notification.job_id == job_id).order_by(Notification.created_at.desc())
+    async def notifications_for_job(self, job_id: uuid.UUID, profile_id: uuid.UUID) -> Sequence[Notification]:
+        statement = (
+            select(Notification)
+            .where(Notification.job_id == job_id, Notification.profile_id == profile_id)
+            .order_by(Notification.created_at.desc())
+        )
         return (await self._session.execute(statement)).scalars().all()
 
     async def notification_counts(self) -> dict[str, int]:

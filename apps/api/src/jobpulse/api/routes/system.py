@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Request, Response
@@ -13,9 +14,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from temporalio.client import Client
 from temporalio.service import RPCError
 
-from jobpulse.api.deps import Ctx, Session
+from jobpulse.api.deps import Ctx
 from jobpulse.api.mappers import job_summary
 from jobpulse.api.schemas import DashboardStats, DependencyStatus, SystemStatus
+from jobpulse.api.tenancy import ActiveProfile, Session, WorkspaceId
 from jobpulse.core.cache import ResponseCache
 from jobpulse.core.errors import ServiceUnavailableError
 from jobpulse.core.security import Reader
@@ -23,7 +25,7 @@ from jobpulse.db.session import ping
 from jobpulse.repositories.activity import WorkflowRunRepository
 from jobpulse.repositories.decisions import DecisionRepository
 from jobpulse.repositories.jobs import JobFilters, JobRepository
-from jobpulse.repositories.sources import SourceRepository
+from jobpulse.repositories.tenancy import SubscriptionRepository
 from jobpulse.services.event_hub import EventHub
 from jobpulse.services.temporal import WorkflowServiceError, connect
 
@@ -57,27 +59,31 @@ async def metrics(ctx: Ctx) -> Response:
 
 
 @router.get("/api/v1/dashboard", response_model=DashboardStats)
-async def dashboard(request: Request, _: Reader, session: Session) -> DashboardStats:
-    """Viewer-independent aggregates: served from the shared short-TTL cache when warm."""
+async def dashboard(
+    request: Request, _: Reader, session: Session, workspace_id: WorkspaceId, profile: ActiveProfile
+) -> DashboardStats:
+    """Workspace aggregates, served from the short-TTL cache when warm (keyed per workspace and
+    profile - a shared key would leak one tenant's dashboard to another)."""
     cache: ResponseCache = request.app.state.cache
-    return await cache.get_or_compute("dashboard:v1", DashboardStats, lambda: _dashboard(session))
+    key = f"dashboard:v2:{workspace_id}:{profile.id}"
+    return await cache.get_or_compute(key, DashboardStats, lambda: _dashboard(session, profile.id))
 
 
-async def _dashboard(session: Session) -> DashboardStats:
+async def _dashboard(session: Session, profile_id: uuid.UUID) -> DashboardStats:
     now = datetime.now(tz=UTC)
     since = now - timedelta(days=DASHBOARD_DAYS)
     jobs = JobRepository(session)
     decisions = DecisionRepository(session)
     top, _total = await jobs.search(
-        JobFilters(eligibility_status="eligible", sort="score"), limit=TOP_MATCHES, offset=0
+        JobFilters(eligibility_status="eligible", sort="score"), profile_id=profile_id, limit=TOP_MATCHES, offset=0
     )
     return DashboardStats(
-        jobs_by_status=await jobs.count_by_status(),
-        sources_total=await SourceRepository(session).count(),
+        jobs_by_status=await jobs.count_by_status(profile_id),
+        sources_total=await SubscriptionRepository(session).count(),
         discovered_per_day=[
             {"day": day.date().isoformat(), "count": n} for day, n in await jobs.discovered_per_day(since)
         ],
-        score_histogram=[{"bucket": bucket, "count": n} for bucket, n in await decisions.score_histogram()],
+        score_histogram=[{"bucket": bucket, "count": n} for bucket, n in await jobs.score_histogram(profile_id)],
         rejection_reasons=[{"rule": rule, "count": n} for rule, n in await decisions.rejection_reasons(since)],
         runs_last_24h=await WorkflowRunRepository(session).status_counts(now - timedelta(hours=24)),
         notifications=await decisions.notification_counts(),

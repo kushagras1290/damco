@@ -10,14 +10,16 @@ from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.exc import IntegrityError
 from temporalio.client import Client
 
-from jobpulse.api.deps import Ctx, Paging, Session, Temporal
+from jobpulse.api.deps import Ctx, Paging, Temporal
 from jobpulse.api.mappers import source_out
 from jobpulse.api.schemas import ActionAccepted, Page, SourceCreate, SourceOut, SourcePatch
+from jobpulse.api.tenancy import Session
 from jobpulse.core.config import Settings
 from jobpulse.core.errors import ConflictError, NotFoundError
 from jobpulse.core.security import Owner, Reader
 from jobpulse.repositories.activity import AuditRepository
 from jobpulse.repositories.sources import SourceRepository
+from jobpulse.repositories.tenancy import SubscriptionRepository
 from jobpulse.services import temporal as temporal_service
 from jobpulse.services.temporal import WorkflowServiceError
 from jobpulse_core.domain.models import SourceDefinition, SourceKind
@@ -71,11 +73,12 @@ async def _validate_definition(body: SourceCreate, ctx: Ctx) -> SourceDefinition
 @router.get("", response_model=Page[SourceOut])
 async def list_sources(_: Reader, session: Session, paging: Paging) -> Page[SourceOut]:
     repo = SourceRepository(session)
-    rows = await repo.list(limit=paging.limit, offset=paging.offset)
+    subscriptions = SubscriptionRepository(session)
+    rows = await subscriptions.subscribed_sources(limit=paging.limit, offset=paging.offset)
     counts = await repo.job_counts([row.id for row in rows])
     return Page(
         items=[source_out(row, counts.get(row.id, 0)) for row in rows],
-        total=await repo.count(),
+        total=await subscriptions.count(),
         limit=paging.limit,
         offset=paging.offset,
     )
@@ -124,6 +127,7 @@ async def create_source(
         entity_id=str(source.id),
         payload={"kind": source.kind, "name": source.name},
     )
+    await SubscriptionRepository(session).subscribe(source.id)  # the creator's workspace follows it
     background.add_task(_apply_polling, client, ctx.settings, str(source.id), enabled=True)
     return source_out(source, 0)
 

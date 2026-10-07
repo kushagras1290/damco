@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     # PgBouncer in transaction mode (e.g. Neon's "-pooler" endpoint) cannot use server-side
     # prepared statements. None = auto-detect from the host name.
     db_prepared_statements: bool | None = None
+    # Non-owner role every transaction switches to so row-level security always applies
+    # (owners and superusers bypass RLS). Created and granted by migration 0002.
+    db_tenant_role: Annotated[str | None, Field(pattern=r"^[a-z_][a-z0-9_]{0,62}$")] = "jobpulse_app"
     # Realtime events need LISTEN, which PgBouncer transaction pooling cannot do. On a pooled
     # DATABASE_URL set this to the *direct* endpoint, or realtime is disabled (with a warning).
     database_listen_url: PostgresDsn | None = None

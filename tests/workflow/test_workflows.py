@@ -17,6 +17,8 @@ from temporalio.worker import Worker
 
 from jobpulse_core import workflow_names as names
 from jobpulse_core.contracts import (
+    EvaluationTarget,
+    EvaluationTargets,
     FetchOutcome,
     JobRef,
     NormalizeInput,
@@ -35,6 +37,16 @@ from jobpulse_worker.workflows import ALL_WORKFLOWS
 
 pytestmark = pytest.mark.workflow
 TASK_QUEUE = "test-jobpulse"
+WORKSPACE_A = str(uuid.uuid4())
+WORKSPACE_B = str(uuid.uuid4())
+TWO_TENANTS = (
+    EvaluationTarget(workspace_id=WORKSPACE_A, profile_id=str(uuid.uuid4())),
+    EvaluationTarget(workspace_id=WORKSPACE_B, profile_id=str(uuid.uuid4())),
+)
+
+
+def ref(job_id: str) -> JobRef:
+    return JobRef(job_id=job_id, workspace_id=WORKSPACE_A, profile_id=TWO_TENANTS[0].profile_id)
 
 
 @dataclass
@@ -49,12 +61,15 @@ class Recorder:
     # The time-skipping test server does not auto-advance timers while abandoned
     # children are in flight; fan-out is covered by test_discovery_fans_out_evaluations.
     spawn_evaluations: bool = True
+    targets: tuple[EvaluationTarget, ...] = TWO_TENANTS
+    starts: list[RunRecord] = field(default_factory=list)
 
 
 def stub_activities(rec: Recorder) -> list[object]:
     @activity.defn(name=names.RECORD_RUN_START)
     async def run_start(record: RunRecord) -> None:
         rec.calls.append(f"start:{record.workflow_type}")
+        rec.starts.append(record)
 
     @activity.defn(name=names.RECORD_RUN_FINISH)
     async def run_finish(record: RunFinish) -> None:
@@ -129,10 +144,15 @@ def stub_activities(rec: Recorder) -> list[object]:
     async def record_poll(record: PollRecord) -> None:
         rec.polls.append(record)
 
+    @activity.defn(name=names.LIST_EVALUATION_TARGETS)
+    async def targets(ref: SourceRef) -> EvaluationTargets:
+        rec.calls.append(names.LIST_EVALUATION_TARGETS)
+        return EvaluationTargets(targets=list(rec.targets))
+
     stages = [
         stage(n) for n in (names.ELIGIBILITY, names.ENRICHMENT, names.EMBEDDING, names.RANKING, names.NOTIFICATION)
     ]
-    return [run_start, run_finish, schedule, fetch, normalize, store, record_poll, *stages]
+    return [run_start, run_finish, schedule, fetch, normalize, store, record_poll, targets, *stages]
 
 
 # Function-scoped: each test gets an isolated time-skipping server (~0.1 s startup), so
@@ -156,7 +176,7 @@ async def test_evaluation_runs_all_stages(env: WorkflowEnvironment) -> None:
     async with await run_worker(env.client, rec):
         summary = await env.client.execute_workflow(
             names.JOB_EVALUATION_WORKFLOW,
-            JobRef(job_id="j1"),
+            ref("j1"),
             id=f"eval-{uuid.uuid4()}",
             task_queue=TASK_QUEUE,
             result_type=None,
@@ -172,7 +192,7 @@ async def test_ineligible_job_stops_after_eligibility(env: WorkflowEnvironment) 
     async with await run_worker(env.client, rec):
         await env.client.execute_workflow(
             names.JOB_EVALUATION_WORKFLOW,
-            JobRef(job_id="j2"),
+            ref("j2"),
             id=f"eval-{uuid.uuid4()}",
             task_queue=TASK_QUEUE,
         )
@@ -185,7 +205,7 @@ async def test_llm_outage_degrades_but_still_ranks(env: WorkflowEnvironment) -> 
     async with await run_worker(env.client, rec):
         await env.client.execute_workflow(
             names.JOB_EVALUATION_WORKFLOW,
-            JobRef(job_id="j3"),
+            ref("j3"),
             id=f"eval-{uuid.uuid4()}",
             task_queue=TASK_QUEUE,
         )
@@ -202,8 +222,31 @@ async def test_discovery_fans_out_evaluations(env: WorkflowEnvironment) -> None:
             id=f"disc-{uuid.uuid4()}",
             task_queue=TASK_QUEUE,
         )
-        assert summary["evaluations_started"] == 2
+        assert summary["evaluations_started"] == 4  # 2 new jobs x 2 subscribed profiles (2 workspaces)
         assert summary["new_jobs"] == 2
+
+
+async def test_discovery_without_subscribers_starts_nothing(env: WorkflowEnvironment) -> None:
+    rec = Recorder(targets=())
+    async with await run_worker(env.client, rec):
+        summary = await env.client.execute_workflow(
+            names.SOURCE_DISCOVERY_WORKFLOW,
+            SourceRef(source_id="s-orphan"),
+            id=f"disc-{uuid.uuid4()}",
+            task_queue=TASK_QUEUE,
+        )
+    assert summary["evaluations_started"] == 0
+    assert names.LIST_EVALUATION_TARGETS in rec.calls
+
+
+async def test_evaluation_runs_are_recorded_in_their_workspace(env: WorkflowEnvironment) -> None:
+    rec = Recorder()
+    async with await run_worker(env.client, rec):
+        await env.client.execute_workflow(
+            names.JOB_EVALUATION_WORKFLOW, ref("j5"), id=f"eval-{uuid.uuid4()}", task_queue=TASK_QUEUE
+        )
+    assert rec.starts[-1].workspace_id == WORKSPACE_A
+    assert rec.finishes[-1].workspace_id == WORKSPACE_A
 
 
 async def test_discovery_reports_rate_limit_without_failing(env: WorkflowEnvironment) -> None:
@@ -261,7 +304,7 @@ async def test_failed_stage_marks_run_failed(env: WorkflowEnvironment) -> None:
         with pytest.raises(WorkflowFailureError):
             await env.client.execute_workflow(
                 names.JOB_EVALUATION_WORKFLOW,
-                JobRef(job_id="j9"),
+                ref("j9"),
                 id=f"eval-{uuid.uuid4()}",
                 task_queue=TASK_QUEUE,
             )

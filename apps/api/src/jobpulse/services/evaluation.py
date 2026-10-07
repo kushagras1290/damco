@@ -3,17 +3,25 @@
 Stage order: eligibility -> enrichment -> embedding -> ranking -> notification.
 Each stage reads its inputs from PostgreSQL and persists its decision, so stages are
 idempotent and every decision is replayable from the audit trail.
+
+Every stage evaluates one job for one profile and runs inside that profile's workspace
+scope (row-level security): decisions, scores and alerts are stamped with the workspace,
+and a profile id from another workspace is simply not found. Catalogue facts (AI
+intelligence, job embeddings) are shared and computed once per job content.
 """
 
 from __future__ import annotations
 
+import functools
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
 import structlog
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from jobpulse.core.metrics import (
     JOB_PROCESSING_DURATION,
@@ -26,6 +34,7 @@ from jobpulse.core.metrics import (
 )
 from jobpulse.db.models import Company, Job, Profile
 from jobpulse.db.session import transaction
+from jobpulse.db.tenancy import scoped, workspace_scope
 from jobpulse.repositories.decisions import DecisionRepository
 from jobpulse.repositories.jobs import JobRepository
 from jobpulse.repositories.profiles import ProfileRepository, to_domain
@@ -60,6 +69,27 @@ STAGE_POST_ENRICHMENT = "post_enrichment"
 
 class JobNotFoundError(JobPulseError):
     """Job vanished or changed; the evaluation must stop (non-retryable)."""
+
+
+class ProfileNotFoundError(JobNotFoundError):
+    """Profile deleted, or not in the evaluation's workspace (non-retryable)."""
+
+
+def in_ref_workspace[**P, R](
+    method: Callable[P, Awaitable[R]],
+) -> Callable[P, Awaitable[R]]:
+    """Run a stage inside the workspace named by its JobRef (positional arg after self)."""
+
+    @functools.wraps(method)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        ref = args[1]
+        if not isinstance(ref, JobRef):
+            msg = "evaluation stages take a JobRef as their first argument"
+            raise TypeError(msg)
+        with scoped(workspace_scope(ref.workspace_id)):
+            return await method(*args, **kwargs)
+
+    return wrapper
 
 
 def job_to_domain(row: Job, company: Company) -> NormalizedJob:
@@ -112,15 +142,23 @@ class EvaluationService:
             )
         return row
 
+    @staticmethod
+    async def _profile(session: AsyncSession, ref: JobRef, *, for_update: bool = False) -> Profile:
+        profile = await session.get(Profile, uuid.UUID(ref.profile_id), with_for_update=for_update)
+        if profile is None:
+            raise ProfileNotFoundError("profile not found in workspace", context={"profile_id": ref.profile_id})
+        return profile
+
     # ------------------------------------------------------------------ 1. eligibility
 
+    @in_ref_workspace
     async def eligibility(self, ref: JobRef, workflow_id: str | None) -> StageResult:
         started = time.perf_counter()
         async with transaction(self._ctx.sessions) as session:
             jobs = JobRepository(session)
             row = await self._load(jobs, ref)
             company = await session.get(Company, row.company_id)
-            profile = await ProfileRepository(session).get_or_create_primary()
+            profile = await self._profile(session, ref)
             if company is None:
                 raise JobNotFoundError("company missing", context={"job_id": ref.job_id})
             domain_profile = to_domain(profile)
@@ -138,6 +176,7 @@ class EvaluationService:
             )
             await jobs.set_state(
                 row.id,
+                profile_id=profile.id,
                 eligibility_status=result.status.value,
                 workflow_state="eligibility_checked" if result.eligible else "rejected",
                 clear_score=not result.eligible,
@@ -147,6 +186,7 @@ class EvaluationService:
                     session,
                     EventType.JOB_EVALUATED,
                     {
+                        "workspace_id": ref.workspace_id,
                         "job_id": ref.job_id,
                         "title": row.title,
                         "company": company.name,
@@ -175,6 +215,7 @@ class EvaluationService:
 
     # ------------------------------------------------------------------ 2. enrichment
 
+    @in_ref_workspace
     async def enrich(self, ref: JobRef, workflow_id: str | None) -> StageResult:
         intelligence = self._ctx.intelligence
         if intelligence is None:
@@ -186,7 +227,9 @@ class EvaluationService:
             company = await session.get(Company, row.company_id)
             decisions = DecisionRepository(session)
             cached = await decisions.get_intelligence(row.id, row.content_hash)
-            deterministic = await decisions.latest_eligibility(row.id, stage=STAGE_DETERMINISTIC)
+            deterministic = await decisions.latest_eligibility(
+                row.id, uuid.UUID(ref.profile_id), stage=STAGE_DETERMINISTIC
+            )
             if company is None or deterministic is None:
                 raise JobNotFoundError("eligibility must run before enrichment", context={"job_id": ref.job_id})
             job = job_to_domain(row, company)
@@ -225,7 +268,7 @@ class EvaluationService:
                 )
 
         async with transaction(self._ctx.sessions) as session:
-            profile = await ProfileRepository(session).get_or_create_primary()
+            profile = await self._profile(session, ref)
             policy = to_domain(profile).policy
             base = result_from_rules(deterministic.status, deterministic.rules, deterministic.policy_hash)
             merged = apply_intelligence(base, intel, policy)
@@ -242,6 +285,7 @@ class EvaluationService:
             )
             await JobRepository(session).set_state(
                 uuid.UUID(ref.job_id),
+                profile_id=profile.id,
                 eligibility_status=merged.status.value,
                 workflow_state="enriched" if merged.eligible else "rejected",
                 clear_score=not merged.eligible,
@@ -275,6 +319,7 @@ class EvaluationService:
 
     # ------------------------------------------------------------------ 3. embeddings
 
+    @in_ref_workspace
     async def embed(self, ref: JobRef) -> StageResult:
         intelligence = self._ctx.intelligence
         if intelligence is None:
@@ -284,7 +329,7 @@ class EvaluationService:
             jobs = JobRepository(session)
             row = await self._load(jobs, ref)
             company = await session.get(Company, row.company_id)
-            profile = await ProfileRepository(session).get_or_create_primary()
+            profile = await self._profile(session, ref)
             if company is None:
                 raise JobNotFoundError("company missing", context={"job_id": ref.job_id})
             job_text = build_job_embedding_text(job_to_domain(row, company))
@@ -317,6 +362,7 @@ class EvaluationService:
 
     # ------------------------------------------------------------------ 4. ranking
 
+    @in_ref_workspace
     async def rank(self, ref: JobRef, workflow_id: str | None) -> StageResult:
         started = time.perf_counter()
         async with transaction(self._ctx.sessions) as session:
@@ -324,8 +370,8 @@ class EvaluationService:
             decisions = DecisionRepository(session)
             row = await self._load(jobs, ref)
             company = await session.get(Company, row.company_id)
-            profile = await ProfileRepository(session).get_or_create_primary()
-            latest = await decisions.latest_eligibility(row.id)
+            profile = await self._profile(session, ref)
+            latest = await decisions.latest_eligibility(row.id, profile.id)
             if company is None or latest is None:
                 raise JobNotFoundError("eligibility must run before ranking", context={"job_id": ref.job_id})
             intel_row = await decisions.get_intelligence(row.id, row.content_hash)
@@ -355,12 +401,14 @@ class EvaluationService:
             )
             await jobs.set_state(
                 row.id,
+                profile_id=profile.id,
                 workflow_state="ranked" if match.actionable else "rejected",
                 match_score=match.final_score if match.actionable else None,
                 clear_score=not match.actionable,
             )
             threshold = profile.notify_min_score
             summary = {
+                "workspace_id": ref.workspace_id,
                 "job_id": ref.job_id,
                 "title": row.title,
                 "company": company.name,
@@ -411,13 +459,14 @@ class EvaluationService:
             )
         return providers
 
+    @in_ref_workspace
     async def notify(self, ref: JobRef) -> StageResult:
         async with transaction(self._ctx.sessions) as session:
             jobs = JobRepository(session)
             row = await self._load(jobs, ref)
             company = await session.get(Company, row.company_id)
-            profile = await ProfileRepository(session).get_or_create_primary()
-            score = await DecisionRepository(session).latest_score(row.id)
+            profile = await self._profile(session, ref)
+            score = await DecisionRepository(session).latest_score(row.id, profile.id)
             if company is None or score is None or not score.actionable:
                 return StageResult(job_id=ref.job_id, proceed=False, detail="not actionable")
             if not profile.notifications_enabled or score.final_score < profile.notify_min_score:
@@ -441,7 +490,7 @@ class EvaluationService:
 
         sent = 0
         for provider in providers:
-            dedupe_key = f"{ref.job_id}:{content_hash}:{provider.channel}"
+            dedupe_key = f"{ref.job_id}:{content_hash}:{provider.channel}:{profile_id}"
             async with transaction(self._ctx.sessions) as session:
                 decisions = DecisionRepository(session)
                 claim = await decisions.claim_notification(
@@ -466,13 +515,18 @@ class EvaluationService:
                 await publish(
                     session,
                     EventType.NOTIFICATION_SENT,
-                    {"job_id": ref.job_id, "title": base_message.title, "channel": provider.channel},
+                    {
+                        "workspace_id": ref.workspace_id,
+                        "job_id": ref.job_id,
+                        "title": base_message.title,
+                        "channel": provider.channel,
+                    },
                 )
             NOTIFICATIONS_SENT.labels(channel=provider.channel, outcome="sent").inc()
             sent += 1
 
         async with transaction(self._ctx.sessions) as session:
             await JobRepository(session).set_state(
-                uuid.UUID(ref.job_id), workflow_state="notified" if sent else "ranked"
+                uuid.UUID(ref.job_id), profile_id=profile_id, workflow_state="notified" if sent else "ranked"
             )
         return StageResult(job_id=ref.job_id, proceed=sent > 0, detail=f"sent {sent}")

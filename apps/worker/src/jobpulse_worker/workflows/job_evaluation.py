@@ -34,6 +34,7 @@ class JobEvaluationWorkflow:
         self._eligible = False
         self._score: float | None = None
         self._notified = 0
+        self._workspace_id: str | None = None
 
     @workflow.query(name=names.STATUS_QUERY)
     def status(self) -> list[str]:
@@ -83,6 +84,7 @@ class JobEvaluationWorkflow:
                 workflow_id=info.workflow_id,
                 run_id=info.run_id,
                 status=status,
+                workspace_id=self._workspace_id,
                 stats={
                     "eligible": self._eligible,
                     "score": self._score,
@@ -98,10 +100,15 @@ class JobEvaluationWorkflow:
     @workflow.run
     async def run(self, ref: JobRef) -> EvaluationSummary:
         info = workflow.info()
+        self._workspace_id = ref.workspace_id
         await workflow.execute_activity(
             names.RECORD_RUN_START,
             RunRecord(
-                workflow_id=info.workflow_id, run_id=info.run_id, workflow_type=info.workflow_type, job_id=ref.job_id
+                workflow_id=info.workflow_id,
+                run_id=info.run_id,
+                workflow_type=info.workflow_type,
+                job_id=ref.job_id,
+                workspace_id=ref.workspace_id,
             ),
             start_to_close_timeout=SHORT_TIMEOUT,
             retry_policy=BOOKKEEPING_RETRY,

@@ -121,6 +121,7 @@ variables `PRODUCTION_API_URL` / `PRODUCTION_WEB_URL` for smoke tests.
 ## Documentation
 
 - [Demo walkthrough](docs/demo.md)
+- [Multi-tenancy design](docs/design/multi-tenancy.md)
 - [Architecture](docs/architecture/overview.md)
 - [ADRs](docs/adr/)
 - [Production runbook](docs/runbook.md)

@@ -82,16 +82,16 @@ async def stop_polling(client: Client, source_id: str) -> None:
         logger.info("polling.stop_ignored", source_id=source_id, reason=str(exc))
 
 
-async def rerun_job(client: Client, settings: Settings, job_id: str, *, nonce: str) -> str:
-    """Force a fresh evaluation (e.g. after a profile change)."""
-    workflow_id = f"job-eval-{job_id}-manual-{nonce}"
+async def rerun_job(client: Client, settings: Settings, ref: JobRef, *, nonce: str) -> str:
+    """Force a fresh evaluation of one job for one profile (e.g. after a profile change)."""
+    workflow_id = f"job-eval-{ref.job_id}-{ref.profile_id}-manual-{nonce}"
     try:
         await client.start_workflow(
             names.JOB_EVALUATION_WORKFLOW,
-            JobRef(job_id=job_id, force=True),
+            ref,
             id=workflow_id,
             task_queue=settings.temporal_task_queue,
         )
     except RPCError as exc:
-        raise WorkflowServiceError("failed to start evaluation", context={"job_id": job_id}) from exc
+        raise WorkflowServiceError("failed to start evaluation", context={"job_id": ref.job_id}) from exc
     return workflow_id

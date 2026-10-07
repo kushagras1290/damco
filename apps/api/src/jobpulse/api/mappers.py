@@ -8,11 +8,13 @@ from jobpulse.api.schemas import (
     ProfileOut,
     SourceOut,
 )
-from jobpulse.db.models import Application, Job, Profile, Source
+from jobpulse.db.models import Application, Profile, Source
+from jobpulse.repositories.jobs import JobView
 from jobpulse_core.domain.models import EligibilityPolicy, Seniority
 
 
-def job_summary(job: Job) -> JobSummary:
+def job_summary(view: JobView) -> JobSummary:
+    job = view.job
     return JobSummary(
         id=job.id,
         title=job.title,
@@ -27,9 +29,9 @@ def job_summary(job: Job) -> JobSummary:
         url=job.canonical_url,
         published_at=job.published_at,
         first_seen_at=job.first_seen_at,
-        eligibility_status=job.eligibility_status,
-        workflow_state=job.workflow_state,
-        match_score=job.match_score,
+        eligibility_status=view.eligibility_status,
+        workflow_state=view.workflow_state,
+        match_score=view.match_score,
         closed=job.closed_at is not None,
     )
 

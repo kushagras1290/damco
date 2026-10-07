@@ -135,8 +135,8 @@ class ApplicationRepository:
         )
         return (await self._session.execute(statement)).unique().scalar_one_or_none()
 
-    async def for_job(self, job_id: uuid.UUID) -> Application | None:
-        statement = select(Application).where(Application.job_id == job_id)
+    async def for_job(self, job_id: uuid.UUID, profile_id: uuid.UUID) -> Application | None:
+        statement = select(Application).where(Application.job_id == job_id, Application.profile_id == profile_id)
         return (await self._session.execute(statement)).scalar_one_or_none()
 
     async def list(self, *, status: str | None, limit: int, offset: int) -> tuple[Sequence[Application], int]:

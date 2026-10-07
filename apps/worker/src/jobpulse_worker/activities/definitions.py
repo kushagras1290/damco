@@ -18,6 +18,7 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from jobpulse.db.session import transaction
+from jobpulse.db.tenancy import SYSTEM_SCOPE, TenantScope, workspace_scope
 from jobpulse.repositories.activity import WorkflowRunRepository
 from jobpulse.services.context import AppContext
 from jobpulse.services.evaluation import EvaluationService
@@ -25,6 +26,7 @@ from jobpulse.services.events import EventType, publish
 from jobpulse.services.ingestion import IngestionService
 from jobpulse_core import workflow_names as names
 from jobpulse_core.contracts import (
+    EvaluationTargets,
     FetchOutcome,
     JobRef,
     NormalizeInput,
@@ -96,6 +98,11 @@ class DiscoveryActivities:
     async def store_jobs(self, data: StoreInput) -> StoreOutcome:
         return await self._ingestion.store(data.source_id, data.normalized_key)
 
+    @activity.defn(name=names.LIST_EVALUATION_TARGETS)
+    @translate_errors
+    async def list_evaluation_targets(self, ref: SourceRef) -> EvaluationTargets:
+        return await self._ingestion.evaluation_targets(ref.source_id)
+
     @activity.defn(name=names.RECORD_POLL)
     @translate_errors
     async def record_poll(self, record: PollRecord) -> None:
@@ -139,7 +146,7 @@ class RunActivities:
     @activity.defn(name=names.RECORD_RUN_START)
     @translate_errors
     async def start(self, record: RunRecord) -> None:
-        async with transaction(self._ctx.sessions) as session:
+        async with transaction(self._ctx.sessions, scope=_run_scope(record.workspace_id)) as session:
             await WorkflowRunRepository(session).start(
                 workflow_id=record.workflow_id,
                 run_id=record.run_id,
@@ -161,7 +168,7 @@ class RunActivities:
     @activity.defn(name=names.RECORD_RUN_FINISH)
     @translate_errors
     async def finish(self, record: RunFinish) -> None:
-        async with transaction(self._ctx.sessions) as session:
+        async with transaction(self._ctx.sessions, scope=_run_scope(record.workspace_id)) as session:
             await WorkflowRunRepository(session).finish(
                 workflow_id=record.workflow_id,
                 run_id=record.run_id,
@@ -188,6 +195,11 @@ class RunActivities:
 BROADCAST_RUN_TYPES = frozenset({names.SOURCE_DISCOVERY_WORKFLOW})
 
 
+def _run_scope(workspace_id: str | None) -> TenantScope:
+    """Evaluation runs belong to their workspace; polling/discovery runs are catalogue (system)."""
+    return workspace_scope(workspace_id) if workspace_id else SYSTEM_SCOPE
+
+
 def _uuid_or_none(value: str | None) -> uuid.UUID | None:
     return uuid.UUID(value) if value else None
 
@@ -201,6 +213,7 @@ def build_activities(ctx: AppContext) -> Sequence[Callable[..., Any]]:
         discovery.fetch_jobs,
         discovery.normalize_jobs,
         discovery.store_jobs,
+        discovery.list_evaluation_targets,
         discovery.record_poll,
         evaluation.eligibility,
         evaluation.enrichment,

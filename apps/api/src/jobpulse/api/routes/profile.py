@@ -6,9 +6,10 @@ from decimal import Decimal
 
 from fastapi import APIRouter
 
-from jobpulse.api.deps import Ctx, Session
+from jobpulse.api.deps import Ctx
 from jobpulse.api.mappers import profile_out
 from jobpulse.api.schemas import Me, ProfileOut, ProfilePatch
+from jobpulse.api.tenancy import Session
 from jobpulse.core.security import Owner, Reader
 from jobpulse.repositories.activity import AuditRepository
 from jobpulse.repositories.profiles import ProfileRepository

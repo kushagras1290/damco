@@ -50,7 +50,7 @@ class AppContext:
         return cls(
             settings=settings,
             engine=engine,
-            sessions=create_session_factory(engine),
+            sessions=create_session_factory(engine, tenant_role=settings.db_tenant_role),
             store=build_snapshot_store(settings),
             intelligence=intelligence,
             notify_http=notify_http,

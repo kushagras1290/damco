@@ -6,9 +6,10 @@ import uuid
 
 from fastapi import APIRouter
 
-from jobpulse.api.deps import Paging, Session
+from jobpulse.api.deps import Paging
 from jobpulse.api.mappers import application_out
 from jobpulse.api.schemas import ApplicationOut, ApplicationPatch, ApplicationStatus, Page
+from jobpulse.api.tenancy import Session
 from jobpulse.core.errors import NotFoundError
 from jobpulse.core.security import Owner, Reader
 from jobpulse.repositories.activity import ApplicationRepository, AuditRepository

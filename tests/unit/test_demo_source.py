@@ -9,7 +9,7 @@ from jobpulse_core.eligibility import RuleName, RuleOutcome, evaluate
 from jobpulse_core.ingestion.http import HttpClientConfig, SafeHttpClient
 from jobpulse_core.ingestion.normalize import normalize_job
 from jobpulse_core.sources import build_source
-from jobpulse_core.sources.demo import INITIAL_RELEASE, RELEASE_PER_POLL, demo_postings
+from jobpulse_core.sources.demo import INITIAL_RELEASE, RELEASE_PER_POLL, WINDOW, demo_postings
 
 DEMO = SourceDefinition(kind=SourceKind.DEMO, company_name="Demo board", company_domain="demo.example")
 
@@ -24,11 +24,21 @@ async def test_releases_incrementally_and_keeps_released_jobs_open() -> None:
     assert [j.external_id for j in second.jobs[:INITIAL_RELEASE]] == [j.external_id for j in first.jobs]
 
 
-async def test_release_stops_at_the_end_of_the_board() -> None:
+async def test_board_never_runs_dry_and_rolls_its_window() -> None:
     total = len(demo_postings())
     async with SafeHttpClient(HttpClientConfig()) as http:
-        result = await build_source(DEMO, http).discover(SourceCheckpoint(cursor={"demo_released": total}))
-    assert len(result.jobs) == total
+        source = build_source(DEMO, http)
+        full = await source.discover(SourceCheckpoint(cursor={"demo_released": total - RELEASE_PER_POLL}))
+        rolled = await source.discover(full.checkpoint)
+        later = await source.discover(SourceCheckpoint(cursor={"demo_released": total * 5}))
+    full_ids = [j.external_id for j in full.jobs]
+    assert full_ids == [p["id"] for p in demo_postings()]  # first cycle: the originals
+    rolled_ids = [j.external_id for j in rolled.jobs]
+    assert len(full_ids) == len(rolled_ids) == WINDOW  # steady listing size: no shrink alarms
+    assert rolled_ids[-RELEASE_PER_POLL:] == [f"{p['id']}-r1" for p in demo_postings()[:RELEASE_PER_POLL]]
+    assert set(full_ids[:RELEASE_PER_POLL]).isdisjoint(rolled_ids)  # the oldest postings closed
+    assert len(set(j.external_id for j in later.jobs)) == WINDOW  # still unique many cycles later
+    assert all(j.url.endswith(j.external_id) for j in later.jobs)
 
 
 def test_companies_are_fictional_reserved_domains() -> None:

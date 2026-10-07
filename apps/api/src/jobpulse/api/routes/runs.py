@@ -7,8 +7,9 @@ from typing import Literal
 
 from fastapi import APIRouter
 
-from jobpulse.api.deps import Paging, Session
+from jobpulse.api.deps import Paging
 from jobpulse.api.schemas import Page, RunOut
+from jobpulse.api.tenancy import Session
 from jobpulse.core.errors import NotFoundError
 from jobpulse.core.security import Reader
 from jobpulse.repositories.activity import WorkflowRunRepository

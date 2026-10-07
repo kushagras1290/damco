@@ -45,6 +45,13 @@ NAMING_CONVENTION = {
 
 UUID_PK = text("uuidv7()")
 NOW = text("now()")
+# Tenant rows default to the transaction's workspace scope (see jobpulse.db.tenancy), so a
+# write made in a workspace scope is stamped automatically and RLS WITH CHECK rejects others.
+CURRENT_WORKSPACE = text("NULLIF(current_setting('app.workspace_id', true), '')::uuid")
+# Rows created before multi-tenancy live here (migration 0002); also the single-tenant default.
+DEFAULT_WORKSPACE_ID = uuid.UUID("00000000-0000-7000-8000-000000000001")
+PLANS = ("free", "pro", "team")
+WORKSPACE_ROLES = ("owner", "admin", "member")
 
 
 class Base(DeclarativeBase):
@@ -65,6 +72,43 @@ def _created() -> Mapped[datetime]:
     return mapped_column(DateTime(timezone=True), nullable=False, server_default=NOW)
 
 
+def _workspace() -> Mapped[uuid.UUID]:
+    return mapped_column(ForeignKey("workspaces.id", ondelete="CASCADE"), index=True, server_default=CURRENT_WORKSPACE)
+
+
+def _in(values: tuple[str, ...]) -> str:
+    return ", ".join(f"'{value}'" for value in values)
+
+
+class Workspace(Base):
+    __tablename__ = "workspaces"
+
+    id: Mapped[uuid.UUID] = _pk()
+    name: Mapped[str] = mapped_column(String(200))
+    slug: Mapped[str] = mapped_column(String(63), unique=True)
+    plan: Mapped[str] = mapped_column(String(20), server_default="free")
+    personal: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    created_at: Mapped[datetime] = _created()
+
+    __table_args__ = (
+        CheckConstraint(f"plan IN ({_in(PLANS)})", name="plan_valid"),
+        CheckConstraint("slug ~ '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$'", name="slug_format"),
+    )
+
+
+class Membership(Base):
+    __tablename__ = "memberships"
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), primary_key=True, server_default=CURRENT_WORKSPACE
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True)
+    role: Mapped[str] = mapped_column(String(20), server_default="member")
+    created_at: Mapped[datetime] = _created()
+
+    __table_args__ = (CheckConstraint(f"role IN ({_in(WORKSPACE_ROLES)})", name="role_valid"),)
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -81,6 +125,7 @@ class Profile(Base):
     __tablename__ = "profiles"
 
     id: Mapped[uuid.UUID] = _pk()
+    workspace_id: Mapped[uuid.UUID] = _workspace()
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), unique=True)
     display_name: Mapped[str] = mapped_column(String(200))
     target_roles: Mapped[list[str]] = mapped_column(ARRAY(String(200)), server_default="{}")
@@ -148,6 +193,20 @@ class Source(Base):
     )
 
 
+class SourceSubscription(Base):
+    """A workspace follows a (global, shared) source; its jobs are evaluated for that workspace's profiles."""
+
+    __tablename__ = "source_subscriptions"
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), primary_key=True, server_default=CURRENT_WORKSPACE
+    )
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    created_at: Mapped[datetime] = _created()
+
+
 class SourceCheckpoint(Base):
     __tablename__ = "source_checkpoints"
 
@@ -182,9 +241,10 @@ class Job(Base):
     fingerprint: Mapped[str] = mapped_column(String(64))
     duplicate_of_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"))
     version: Mapped[int] = mapped_column(Integer, server_default="1")
-    eligibility_status: Mapped[str] = mapped_column(String(20), server_default="pending")
+    # Catalogue lifecycle only (discovered / duplicate / closed). Per-profile evaluation state
+    # lives in ProfileJob; the legacy jobs.eligibility_status / match_score columns are unused
+    # since migration 0002 and are dropped by the next contract migration.
     workflow_state: Mapped[str] = mapped_column(String(30), server_default="discovered")
-    match_score: Mapped[float | None] = mapped_column(Float)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIMENSIONS))
     embedding_hash: Mapped[str | None] = mapped_column(String(64))
     search_vector: Mapped[str] = mapped_column(
@@ -208,11 +268,9 @@ class Job(Base):
         Index("ix_jobs_normalized_location", "normalized_location"),
         Index("ix_jobs_remote_policy", "remote_policy"),
         Index("ix_jobs_seniority", "seniority"),
-        Index("ix_jobs_eligibility_status", "eligibility_status"),
         Index("ix_jobs_workflow_state", "workflow_state"),
         Index("ix_jobs_fingerprint", "fingerprint"),
         Index("ix_jobs_canonical_url", "canonical_url"),
-        Index("ix_jobs_match_score", "match_score"),
         Index("ix_jobs_search_vector", "search_vector", postgresql_using="gin"),
         Index(
             "ix_jobs_normalized_title_trgm",
@@ -226,7 +284,26 @@ class Job(Base):
             postgresql_using="hnsw",
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
+    )
+
+
+class ProfileJob(Base):
+    """One profile's view of one job: eligibility, score and evaluation progress."""
+
+    __tablename__ = "profile_jobs"
+
+    profile_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"), primary_key=True)
+    job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True, index=True)
+    workspace_id: Mapped[uuid.UUID] = _workspace()
+    eligibility_status: Mapped[str] = mapped_column(String(20), server_default="pending")
+    state: Mapped[str] = mapped_column(String(30), server_default="discovered")
+    match_score: Mapped[float | None] = mapped_column(Float)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=NOW, onupdate=NOW)
+
+    __table_args__ = (
+        Index("ix_profile_jobs_profile_status_score", "profile_id", "eligibility_status", "match_score"),
         CheckConstraint("eligibility_status IN ('pending','eligible','ineligible')", name="eligibility_status_valid"),
+        CheckConstraint("match_score IS NULL OR (match_score >= 0 AND match_score <= 1)", name="match_score_range"),
     )
 
 
@@ -265,6 +342,7 @@ class EligibilityDecision(Base):
     id: Mapped[uuid.UUID] = _pk()
     job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"))
     profile_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
+    workspace_id: Mapped[uuid.UUID] = _workspace()
     stage: Mapped[str] = mapped_column(String(30))
     status: Mapped[str] = mapped_column(String(20))
     rules: Mapped[list[dict[str, Any]]] = mapped_column(JSONB)
@@ -305,6 +383,7 @@ class MatchScore(Base):
     id: Mapped[uuid.UUID] = _pk()
     job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"))
     profile_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
+    workspace_id: Mapped[uuid.UUID] = _workspace()
     final_score: Mapped[float] = mapped_column(Float)
     actionable: Mapped[bool] = mapped_column(Boolean)
     components: Mapped[list[dict[str, Any]]] = mapped_column(JSONB)
@@ -327,6 +406,7 @@ class Notification(Base):
     id: Mapped[uuid.UUID] = _pk()
     job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
     profile_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
+    workspace_id: Mapped[uuid.UUID] = _workspace()
     channel: Mapped[str] = mapped_column(String(20))
     status: Mapped[str] = mapped_column(String(20), server_default="pending")
     dedupe_key: Mapped[str] = mapped_column(String(255), unique=True)
@@ -344,6 +424,7 @@ class Application(Base):
     id: Mapped[uuid.UUID] = _pk()
     job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"))
     profile_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
+    workspace_id: Mapped[uuid.UUID] = _workspace()
     status: Mapped[str] = mapped_column(String(30), server_default="interested")
     notes: Mapped[str] = mapped_column(Text, server_default="")
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -370,6 +451,10 @@ class WorkflowRun(Base):
     workflow_type: Mapped[str] = mapped_column(String(100))
     source_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sources.id", ondelete="SET NULL"), index=True)
     job_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"), index=True)
+    # NULL for catalogue runs (polling/discovery); set for per-profile evaluation runs.
+    workspace_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True, server_default=CURRENT_WORKSPACE
+    )
     status: Mapped[str] = mapped_column(String(20), server_default="running")
     stats: Mapped[dict[str, Any]] = mapped_column(JSONB, server_default="{}")
     error: Mapped[str | None] = mapped_column(Text)
@@ -387,6 +472,7 @@ class AuditEvent(Base):
     __tablename__ = "audit_events"
 
     id: Mapped[uuid.UUID] = _pk()
+    workspace_id: Mapped[uuid.UUID] = _workspace()
     actor: Mapped[str] = mapped_column(String(200))
     action: Mapped[str] = mapped_column(String(100))
     entity_type: Mapped[str] = mapped_column(String(50))

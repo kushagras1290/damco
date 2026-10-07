@@ -104,9 +104,26 @@ class SourceSchedule(BaseModel):
     circuit_open_remaining_seconds: int
 
 
+class EvaluationTarget(BaseModel):
+    """One profile (in one workspace) that should evaluate jobs from a source."""
+
+    model_config = _CFG
+    workspace_id: str
+    profile_id: str
+
+
+class EvaluationTargets(BaseModel):
+    model_config = _CFG
+    targets: list[EvaluationTarget] = Field(default_factory=list)
+
+
 class JobRef(BaseModel):
+    """One job evaluated for one profile; all evaluation stages run in that workspace's scope."""
+
     model_config = _CFG
     job_id: str
+    workspace_id: str
+    profile_id: str
     content_hash: str | None = None
     force: bool = False
 
@@ -136,6 +153,7 @@ class RunRecord(BaseModel):
     workflow_type: str
     source_id: str | None = None
     job_id: str | None = None
+    workspace_id: str | None = None  # set for per-profile evaluation runs
 
 
 class RunFinish(BaseModel):
@@ -145,3 +163,4 @@ class RunFinish(BaseModel):
     status: str
     stats: dict[str, float | int | str | bool | None] = Field(default_factory=dict)
     error: str | None = None
+    workspace_id: str | None = None

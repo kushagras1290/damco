@@ -2,8 +2,13 @@
 
 Lets evaluators watch the realtime pipeline end to end without depending on what real
 job boards happen to contain. Companies are fictional and use reserved ``.example``
-domains. Each poll releases ``RELEASE_PER_POLL`` more postings; the listing is "full",
-so already-released postings stay open.
+domains.
+
+The board never runs dry: every poll releases ``RELEASE_PER_POLL`` new postings and the
+(full) listing shows only the most recent ``WINDOW`` of them, so the oldest close - like a
+real board's churn. Once the bundled templates are used up they are re-posted with a
+cycle suffix (``<id>-r<n>``), which are new jobs. Steady arrivals also keep adaptive
+polling at its fastest interval, so the demo stays live however long it runs.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ DEMO_BOARD_FILE = Path(__file__).with_name("demo_board.json")
 INITIAL_RELEASE = 6
 RELEASE_PER_POLL = 3
 CURSOR_KEY = "demo_released"
+WINDOW = 30  # postings visible on the board at once
 MINUTES_BETWEEN_POSTINGS = 7  # spreads publish times so freshness scoring varies
 
 
@@ -38,10 +44,11 @@ class DemoSource:
     async def discover(self, checkpoint: SourceCheckpoint) -> DiscoveryResult:
         postings = demo_postings()
         released_before = int(checkpoint.cursor.get(CURSOR_KEY, 0))
-        released = min(len(postings), max(INITIAL_RELEASE, released_before + RELEASE_PER_POLL))
+        released = max(INITIAL_RELEASE, released_before + RELEASE_PER_POLL)
         now = datetime.now(tz=UTC)
-        jobs = [self._to_raw(posting, now, index, released) for index, posting in enumerate(postings[:released])]
-        payload = json.dumps({"jobs": list(postings[:released])}).encode("utf-8")
+        visible = range(max(0, released - WINDOW), released)
+        jobs = [self._to_raw(postings[n % len(postings)], now, n, released) for n in visible]
+        payload = json.dumps({"jobs": [job.raw for job in jobs]}).encode("utf-8")
         result = FetchResult(
             url="demo://board", status_code=200, headers={"content-type": "application/json"}, content=payload
         )
@@ -54,13 +61,15 @@ class DemoSource:
         )
 
     @staticmethod
-    def _to_raw(posting: dict[str, Any], now: datetime, index: int, released: int) -> RawJob:
+    def _to_raw(posting: dict[str, Any], now: datetime, sequence: int, released: int) -> RawJob:
         # Newest releases look newest: publish time counts back from the latest posting.
-        published = now - timedelta(minutes=MINUTES_BETWEEN_POSTINGS * (released - 1 - index))
+        published = now - timedelta(minutes=MINUTES_BETWEEN_POSTINGS * (released - 1 - sequence))
+        cycle = sequence // len(demo_postings())
+        external_id = posting["id"] if cycle == 0 else f"{posting['id']}-r{cycle}"
         return RawJob(
-            external_id=posting["id"],
+            external_id=external_id,
             title=posting["title"],
-            url=f"https://jobs.{posting['domain']}/postings/{posting['id']}",
+            url=f"https://jobs.{posting['domain']}/postings/{external_id}",
             company_name=posting["company"],
             company_domain=posting["domain"],
             location=posting.get("location"),

@@ -47,6 +47,17 @@ migrate → API → worker → web → smoke tests. Consequences:
   a new workflow type name. Activities can change freely. `SourcePollingWorkflow`
   continues-as-new every 50 polls, so old histories age out within days.
 
+### Release notes: multi-tenancy (migration 0002)
+
+- The migration creates the role `jobpulse_app` (needs `CREATEROLE`; Neon's owner role has it)
+  and grants it table privileges. The API and worker switch to it per transaction
+  (`DB_TENANT_ROLE`, default `jobpulse_app`) so row-level security applies.
+- Existing data moves into the **Default** workspace; existing owners become its owners.
+- `JobRef` now names a workspace and profile. Let in-flight `JobEvaluationWorkflow`s finish
+  (they take seconds to minutes) before deploying the worker; discovery runs started before
+  the deploy replay safely (`workflow.patched("tenant-fanout-v1")`) and start no evaluations,
+  so their jobs are picked up on the next poll or via *Re-run evaluation*.
+
 ## Key and secret rotation
 
 | Secret | Procedure |
@@ -85,5 +96,9 @@ migrate → API → worker → web → smoke tests. Consequences:
 - **UI shows "Polling" instead of "Live"** → API logged `events.disabled` (pooled URL without
   `DATABASE_LISTEN_URL`) or the LISTEN connection is reconnecting (`events.listener_disconnected`).
 - **Burst of 503 `idempotency_unavailable`** → Redis down; unkeyed reads/writes still work.
+- **`new row violates row-level security policy`** → code wrote a tenant row without a workspace
+  scope (a bug: tenant writes must run in the workspace's scope), never a reason to disable RLS.
+- **API returns empty lists after a migration** → `jobpulse_app` lacks grants on a new table;
+  check the migration ran as the owner (default privileges cover tables it creates).
 - **Workflow task failures after deploy** → non-deterministic workflow change; roll back the
   worker, add `workflow.patched`, redeploy.

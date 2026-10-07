@@ -15,11 +15,13 @@ import pytest
 import respx
 from sqlalchemy import func, select
 
-from jobpulse.db.models import EligibilityDecision, Job, JobVersion, MatchScore, RawSnapshot
+from jobpulse.db.models import DEFAULT_WORKSPACE_ID, EligibilityDecision, Job, JobVersion, MatchScore, RawSnapshot
 from jobpulse.db.session import transaction
+from jobpulse.db.tenancy import workspace_scope
 from jobpulse.repositories.jobs import JobFilters, JobRepository
 from jobpulse.repositories.profiles import ProfileRepository
 from jobpulse.repositories.sources import SourceRepository
+from jobpulse.repositories.tenancy import SubscriptionRepository
 from jobpulse.seed import apply_seed, load_seed, start_polling
 from jobpulse.services.context import AppContext
 from jobpulse.services.evaluation import EvaluationService
@@ -34,6 +36,18 @@ pytestmark = pytest.mark.integration
 
 SEED_FILE = Path(__file__).resolve().parents[2] / "seed.yaml"
 GREENHOUSE_URL = "https://boards-api.greenhouse.io/v1/boards/acme/jobs?content=true"
+DEFAULT = workspace_scope(DEFAULT_WORKSPACE_ID)
+
+
+async def default_profile_id(ctx: AppContext) -> str:
+    async with transaction(ctx.sessions, scope=DEFAULT) as session:
+        return str((await ProfileRepository(session).get_or_create_primary()).id)
+
+
+def ref_for(job_id: str, profile_id: str, content_hash: str | None) -> JobRef:
+    return JobRef(
+        job_id=job_id, workspace_id=str(DEFAULT_WORKSPACE_ID), profile_id=profile_id, content_hash=content_hash
+    )
 
 
 async def create_source(ctx: AppContext, name: str = "Acme Greenhouse", board: str = "acme") -> str:
@@ -52,7 +66,10 @@ async def create_source(ctx: AppContext, name: str = "Acme Greenhouse", board: s
             min_poll_interval_seconds=300,
             max_poll_interval_seconds=3600,
         )
-        return str(source.id)
+        source_id = source.id
+    async with transaction(ctx.sessions, scope=DEFAULT) as session:
+        await SubscriptionRepository(session).subscribe(source_id)  # as the API does on create
+    return str(source_id)
 
 
 async def discover(ctx: AppContext, source_id: str, payload: object, url: str = GREENHOUSE_URL) -> object:
@@ -114,16 +131,17 @@ async def test_cross_source_duplicates_are_linked(ctx: AppContext) -> None:
 async def test_evaluation_persists_explainable_decisions(ctx: AppContext) -> None:
     source_id = await create_source(ctx)
     stored = await discover(ctx, source_id, load_fixture("greenhouse/board.json"))
-    async with transaction(ctx.sessions) as session:
+    async with transaction(ctx.sessions, scope=DEFAULT) as session:
         profile = await ProfileRepository(session).get_or_create_primary()
         profile.skills = ["Python", "FastAPI", "PostgreSQL", "RAG", "LLM"]
         profile.target_roles = ["Senior AI Engineer"]
         profile.seniority = "senior"
+        profile_id = str(profile.id)
 
     service = EvaluationService(ctx)
     results = {}
     for job_id in stored.jobs_to_evaluate:
-        ref = JobRef(job_id=job_id, content_hash=stored.content_hashes[job_id])
+        ref = ref_for(job_id, profile_id, stored.content_hashes[job_id])
         gate = await service.eligibility(ref, "wf-test")
         enriched = await service.enrich(ref, "wf-test")  # intelligence disabled -> passthrough
         assert enriched.detail == "intelligence disabled"
@@ -139,10 +157,12 @@ async def test_evaluation_persists_explainable_decisions(ctx: AppContext) -> Non
     assert ranked is not None
     assert ranked.score is not None
 
-    async with transaction(ctx.sessions) as session:
+    async with transaction(ctx.sessions, scope=DEFAULT) as session:
         decisions = (await session.execute(select(EligibilityDecision))).scalars().all()
         scores = (await session.execute(select(MatchScore))).scalars().all()
-        jobs, total = await JobRepository(session).search(JobFilters(eligibility_status="eligible"), limit=10, offset=0)
+        jobs, total = await JobRepository(session).search(
+            JobFilters(eligibility_status="eligible"), profile_id=uuid.UUID(profile_id), limit=10, offset=0
+        )
     assert len(decisions) == 2
     failed = next(d for d in decisions if d.status == "ineligible")
     assert {r["rule"] for r in failed.rules if r["outcome"] == "fail"} >= {"excluded_region", "location"}
@@ -155,14 +175,17 @@ async def test_evaluation_persists_explainable_decisions(ctx: AppContext) -> Non
 async def test_search_and_fuzzy_title(ctx: AppContext) -> None:
     source_id = await create_source(ctx)
     await discover(ctx, source_id, load_fixture("greenhouse/board.json"))
-    async with transaction(ctx.sessions) as session:
+    profile_id = uuid.UUID(await default_profile_id(ctx))
+    async with transaction(ctx.sessions, scope=DEFAULT) as session:
         repo = JobRepository(session)
-        fts, fts_total = await repo.search(JobFilters(query="FastAPI"), limit=10, offset=0)
-        fuzzy, _ = await repo.search(JobFilters(query="senior artificial intelligence enginer"), limit=10, offset=0)
-        job = fts[0]
+        fts, fts_total = await repo.search(JobFilters(query="FastAPI"), profile_id=profile_id, limit=10, offset=0)
+        fuzzy, _ = await repo.search(
+            JobFilters(query="senior artificial intelligence enginer"), profile_id=profile_id, limit=10, offset=0
+        )
+        job = fts[0].job
         similar = await repo.similar_titles(job)
     assert fts_total == 1
-    assert fts[0].title.startswith("Senior AI Engineer")
+    assert fts[0].job.title.startswith("Senior AI Engineer")
     assert len(fuzzy) == 1
     assert isinstance(similar, list)
 
@@ -205,7 +228,7 @@ async def test_seed_is_idempotent(ctx: AppContext) -> None:
     assert len(first.created_source_ids) == len(seed.sources)
     assert second.created_source_ids == []
     assert sorted(second.enabled_source_ids) == sorted(first.created_source_ids)  # still ensured
-    async with transaction(ctx.sessions) as session:
+    async with transaction(ctx.sessions, scope=DEFAULT) as session:
         profile = await ProfileRepository(session).get_or_create_primary()
     assert "Python" in profile.skills
 
@@ -245,7 +268,7 @@ async def test_llm_daily_limit_degrades_enrichment(ctx: AppContext) -> None:
     source_id = await create_source(ctx)
     stored = await discover(ctx, source_id, load_fixture("greenhouse/board.json"))
     job_id = stored.jobs_to_evaluate[0]
-    ref = JobRef(job_id=job_id, content_hash=stored.content_hashes[job_id])
+    ref = ref_for(job_id, await default_profile_id(ctx), stored.content_hashes[job_id])
 
     class ExplodingIntelligence:
         """Any call would mean the budget guard failed."""

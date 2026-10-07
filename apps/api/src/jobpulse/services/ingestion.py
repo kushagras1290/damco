@@ -27,12 +27,16 @@ from jobpulse.core.metrics import (
 )
 from jobpulse.db.models import Source
 from jobpulse.db.session import transaction
+from jobpulse.db.tenancy import system_scoped
 from jobpulse.repositories.jobs import JobRepository
 from jobpulse.repositories.sources import SourceRepository
+from jobpulse.repositories.tenancy import SubscriptionRepository
 from jobpulse.services.context import AppContext
 from jobpulse.services.events import EventType, publish
 from jobpulse.services.storage import safe_segment
 from jobpulse_core.contracts import (
+    EvaluationTarget,
+    EvaluationTargets,
     FetchOutcome,
     NormalizeOutcome,
     PollRecord,
@@ -84,6 +88,7 @@ class IngestionService:
 
     # ------------------------------------------------------------------ schedule
 
+    @system_scoped
     async def schedule(self, source_id: str) -> SourceSchedule:
         async with transaction(self._ctx.sessions) as session:
             source = await SourceRepository(session).get(uuid.UUID(source_id))
@@ -112,6 +117,7 @@ class IngestionService:
 
     # ------------------------------------------------------------------ fetch
 
+    @system_scoped
     async def fetch(self, source_id: str) -> FetchOutcome:
         async with transaction(self._ctx.sessions) as session:
             repo = SourceRepository(session)
@@ -216,6 +222,7 @@ class IngestionService:
 
     # ------------------------------------------------------------------ normalize
 
+    @system_scoped
     async def normalize(self, source_id: str, staging_key: str) -> NormalizeOutcome:
         raw_jobs = _RAW_LIST.validate_json(await self._ctx.store.get(staging_key))
         staged: list[StagedJob] = []
@@ -237,6 +244,7 @@ class IngestionService:
 
     # ------------------------------------------------------------------ store
 
+    @system_scoped
     async def store(self, source_id: str, normalized_key: str) -> StoreOutcome:
         staged = _STAGED_LIST.validate_json(await self._ctx.store.get(normalized_key))
         now = datetime.now(tz=UTC)
@@ -366,6 +374,16 @@ class IngestionService:
 
     # ------------------------------------------------------------------ poll bookkeeping
 
+    @system_scoped
+    async def evaluation_targets(self, source_id: str) -> EvaluationTargets:
+        """Every profile in every workspace that follows this source (discovery fan-out)."""
+        async with transaction(self._ctx.sessions) as session:
+            pairs = await SubscriptionRepository(session).evaluation_targets(uuid.UUID(source_id))
+        return EvaluationTargets(
+            targets=[EvaluationTarget(workspace_id=str(ws), profile_id=str(profile)) for ws, profile in pairs]
+        )
+
+    @system_scoped
     async def record_poll(self, record: PollRecord) -> None:
         now = datetime.now(tz=UTC)
         async with transaction(self._ctx.sessions) as session:

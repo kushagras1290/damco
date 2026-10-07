@@ -1,4 +1,9 @@
-"""Jobs, versions and raw snapshots, including the three-layer deduplication queries."""
+"""Jobs (shared catalogue), versions, raw snapshots and per-profile job state.
+
+Catalogue rows (jobs, versions, snapshots) are shared by every workspace. A profile's view
+of a job - eligibility, score, evaluation progress - lives in ``profile_jobs`` and is
+protected by row-level security, so queries joining it only ever see the current workspace.
+"""
 
 from __future__ import annotations
 
@@ -9,14 +14,38 @@ from datetime import datetime
 from typing import Any, Literal
 
 from sqlalchemy import ColumnElement, Select, and_, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from jobpulse.db.models import Company, Job, JobVersion, RawSnapshot, Source
+from jobpulse.db.models import Company, Job, JobVersion, ProfileJob, RawSnapshot, Source
 from jobpulse_core.domain.models import NormalizedJob
 
 TRIGRAM_DUPLICATE_THRESHOLD = 0.85
 SortKey = Literal["score", "published", "discovered"]
+PENDING = "pending"
+
+
+@dataclass(frozen=True, slots=True)
+class JobView:
+    """A catalogue job plus one profile's state for it (None until first evaluated)."""
+
+    job: Job
+    state: ProfileJob | None
+
+    @property
+    def eligibility_status(self) -> str:
+        return self.state.eligibility_status if self.state else PENDING
+
+    @property
+    def match_score(self) -> float | None:
+        return self.state.match_score if self.state else None
+
+    @property
+    def workflow_state(self) -> str:
+        if self.job.workflow_state != "discovered" or self.state is None:
+            return self.job.workflow_state  # catalogue states (duplicate / closed) win
+        return self.state.state
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,8 +99,12 @@ class JobRepository:
         statement = select(Job).where(Job.source_id == source_id, Job.external_id == external_id)
         return (await self._session.execute(statement)).scalar_one_or_none()
 
-    def _filtered(self, filters: JobFilters) -> Select[Job]:
-        statement = select(Job).options(joinedload(Job.company), joinedload(Job.source).joinedload(Source.company))
+    def _filtered(self, filters: JobFilters, profile_id: uuid.UUID) -> Select[Job, ProfileJob]:
+        statement = (
+            select(Job, ProfileJob)
+            .outerjoin(ProfileJob, and_(ProfileJob.job_id == Job.id, ProfileJob.profile_id == profile_id))
+            .options(joinedload(Job.company), joinedload(Job.source).joinedload(Source.company))
+        )
         conditions = []
         if filters.query:
             ts_query = func.websearch_to_tsquery("english", filters.query)
@@ -79,7 +112,7 @@ class JobRepository:
                 or_(Job.search_vector.op("@@")(ts_query), Job.normalized_title.op("%")(filters.query.lower())),
             )
         if filters.eligibility_status:
-            conditions.append(Job.eligibility_status == filters.eligibility_status)
+            conditions.append(func.coalesce(ProfileJob.eligibility_status, PENDING) == filters.eligibility_status)
         if filters.remote_policy:
             conditions.append(Job.remote_policy == filters.remote_policy)
         if filters.seniority:
@@ -89,7 +122,7 @@ class JobRepository:
         if filters.company_id:
             conditions.append(Job.company_id == filters.company_id)
         if filters.min_score is not None:
-            conditions.append(Job.match_score >= filters.min_score)
+            conditions.append(ProfileJob.match_score >= filters.min_score)
         if not filters.include_closed:
             conditions.append(Job.closed_at.is_(None))
         if not filters.include_duplicates:
@@ -98,26 +131,46 @@ class JobRepository:
             statement = statement.where(and_(*conditions))
         return statement
 
-    async def search(self, filters: JobFilters, *, limit: int, offset: int) -> tuple[Sequence[Job], int]:
-        base = self._filtered(filters)
+    async def search(
+        self, filters: JobFilters, *, profile_id: uuid.UUID, limit: int, offset: int
+    ) -> tuple[list[JobView], int]:
+        base = self._filtered(filters, profile_id)
         total_stmt = select(func.count()).select_from(base.with_only_columns(Job.id).order_by(None).subquery())
         total = int((await self._session.execute(total_stmt)).scalar_one())
         orderings: dict[SortKey, tuple[ColumnElement[Any], ...]] = {
-            "score": (Job.match_score.desc().nulls_last(), Job.published_at.desc().nulls_last()),
+            "score": (ProfileJob.match_score.desc().nulls_last(), Job.published_at.desc().nulls_last()),
             "published": (Job.published_at.desc().nulls_last(), Job.id.desc()),
             "discovered": (Job.first_seen_at.desc(), Job.id.desc()),
         }
         statement = base.order_by(*orderings[filters.sort]).limit(limit).offset(offset)
-        rows = (await self._session.execute(statement)).unique().scalars().all()
-        return rows, total
+        rows = (await self._session.execute(statement)).unique().all()
+        return [JobView(job=row[0], state=row[1]) for row in rows], total
 
-    async def count_by_status(self) -> dict[str, int]:
+    async def view(self, job_id: uuid.UUID, profile_id: uuid.UUID) -> ProfileJob | None:
+        return await self._session.get(ProfileJob, (profile_id, job_id))
+
+    async def count_by_status(self, profile_id: uuid.UUID) -> dict[str, int]:
+        status = func.coalesce(ProfileJob.eligibility_status, PENDING)
         statement = (
-            select(Job.eligibility_status, func.count(Job.id))
+            select(status, func.count(Job.id))
+            .select_from(Job)
+            .outerjoin(ProfileJob, and_(ProfileJob.job_id == Job.id, ProfileJob.profile_id == profile_id))
             .where(Job.closed_at.is_(None), Job.duplicate_of_id.is_(None))
-            .group_by(Job.eligibility_status)
+            .group_by(status)
         )
         return {row[0]: int(row[1]) for row in (await self._session.execute(statement)).all()}
+
+    async def score_histogram(self, profile_id: uuid.UUID) -> list[tuple[float, int]]:
+        bucket = func.width_bucket(ProfileJob.match_score, 0, 1.0001, 10)
+        statement = (
+            select(bucket, func.count())
+            .select_from(ProfileJob)
+            .join(Job, Job.id == ProfileJob.job_id)
+            .where(ProfileJob.profile_id == profile_id, ProfileJob.match_score.is_not(None), Job.closed_at.is_(None))
+            .group_by(bucket)
+            .order_by(bucket)
+        )
+        return [((int(row[0]) - 1) / 10, int(row[1])) for row in (await self._session.execute(statement)).all()]
 
     async def discovered_per_day(self, since: datetime) -> list[tuple[datetime, int]]:
         day = func.date_trunc("day", Job.first_seen_at)
@@ -219,10 +272,14 @@ class JobRepository:
         row.version += 1
         row.last_seen_at = now
         row.closed_at = None
-        row.eligibility_status = "pending"
         row.workflow_state = "discovered"
-        row.match_score = None
         await self._session.flush()
+        # New content invalidates every profile's verdict (runs in system scope during ingestion).
+        await self._session.execute(
+            update(ProfileJob)
+            .where(ProfileJob.job_id == row.id)
+            .values(eligibility_status=PENDING, state="discovered", match_score=None)
+        )
 
     async def add_version(self, row: Job, *, snapshot_id: uuid.UUID | None) -> None:
         self._session.add(
@@ -295,22 +352,32 @@ class JobRepository:
         self,
         job_id: uuid.UUID,
         *,
+        profile_id: uuid.UUID,
         workflow_state: str | None = None,
         eligibility_status: str | None = None,
         match_score: float | None = None,
         clear_score: bool = False,
     ) -> None:
+        """Upsert one profile's state for a job (workspace_id comes from the transaction scope)."""
         values: dict[str, object] = {}
         if workflow_state is not None:
-            values["workflow_state"] = workflow_state
+            values["state"] = workflow_state
         if eligibility_status is not None:
             values["eligibility_status"] = eligibility_status
         if match_score is not None:
             values["match_score"] = match_score
         if clear_score:
             values["match_score"] = None
-        if values:
-            await self._session.execute(update(Job).where(Job.id == job_id).values(**values))
+        if not values:
+            return
+        statement = (
+            insert(ProfileJob)
+            .values(profile_id=profile_id, job_id=job_id, **values)
+            .on_conflict_do_update(
+                index_elements=[ProfileJob.profile_id, ProfileJob.job_id], set_={**values, "updated_at": func.now()}
+            )
+        )
+        await self._session.execute(statement)
 
     async def set_embedding(self, job_id: uuid.UUID, vector: list[float], content_hash: str) -> None:
         await self._session.execute(

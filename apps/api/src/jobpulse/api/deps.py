@@ -1,13 +1,11 @@
-"""FastAPI dependencies: app context, DB transaction per request, Temporal client."""
+"""FastAPI dependencies: app context, Temporal client, pagination (sessions: api.tenancy)."""
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import Depends, Query, Request
-from sqlalchemy.ext.asyncio import AsyncSession
 from temporalio.client import Client
 
 from jobpulse.core.errors import ServiceUnavailableError
@@ -23,15 +21,6 @@ def get_ctx(request: Request) -> AppContext:
 
 
 Ctx = Annotated[AppContext, Depends(get_ctx)]
-
-
-async def get_session(ctx: Ctx) -> AsyncIterator[AsyncSession]:
-    """One transaction per request: committed on success, rolled back on error."""
-    async with ctx.sessions() as session, session.begin():
-        yield session
-
-
-Session = Annotated[AsyncSession, Depends(get_session)]
 
 
 async def get_temporal(request: Request, ctx: Ctx) -> Client:

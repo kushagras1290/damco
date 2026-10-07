@@ -1,4 +1,8 @@
-"""Profiles and users. JobPulse v1 is single-tenant: one primary profile."""
+"""Profiles and users.
+
+Profile queries are workspace-scoped by row-level security: "primary" means the oldest
+profile in the current workspace, and new profiles are stamped with that workspace.
+"""
 
 from __future__ import annotations
 

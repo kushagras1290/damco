@@ -10,10 +10,12 @@ from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from jobpulse.core.config import Settings
+from jobpulse.db.tenancy import TenantScope, apply_scope, current_scope, validate_role
 
 DEFAULT_PREPARE_THRESHOLD = 5
 CONNECT_TIMEOUT_SECONDS = 10
 POOL_RECYCLE_SECONDS = 1800
+TENANT_ROLE_KEY = "tenant_role"
 
 
 def create_engine(settings: Settings) -> AsyncEngine:
@@ -48,14 +50,23 @@ def create_engine(settings: Settings) -> AsyncEngine:
     return engine
 
 
-def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
-    return async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+def create_session_factory(engine: AsyncEngine, *, tenant_role: str | None = None) -> async_sessionmaker[AsyncSession]:
+    """``tenant_role``: the non-owner role every transaction switches to, so RLS applies."""
+    return async_sessionmaker(
+        engine, expire_on_commit=False, autoflush=False, info={TENANT_ROLE_KEY: validate_role(tenant_role)}
+    )
 
 
 @asynccontextmanager
-async def transaction(factory: async_sessionmaker[AsyncSession]) -> AsyncGenerator[AsyncSession]:
-    """Session bound to one transaction: commit on success, rollback on any error."""
+async def transaction(
+    factory: async_sessionmaker[AsyncSession], *, scope: TenantScope | None = None
+) -> AsyncGenerator[AsyncSession]:
+    """One transaction under a tenant scope (default: the caller's current scope).
+
+    Commits on success, rolls back on any error.
+    """
     async with factory() as session, session.begin():
+        await apply_scope(session, scope or current_scope(), role=session.info.get(TENANT_ROLE_KEY))
         yield session
 
 
