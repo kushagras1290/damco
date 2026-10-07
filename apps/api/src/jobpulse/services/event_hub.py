@@ -17,7 +17,7 @@ import psycopg
 import structlog
 from psycopg import sql
 
-from jobpulse.services.events import EVENT_CHANNEL
+from jobpulse.services.events import EVENT_CHANNEL, Audience, route_of
 
 # Composed once with identifier quoting (LISTEN cannot take a bind parameter).
 LISTEN_STATEMENT = sql.SQL("LISTEN {}").format(sql.Identifier(EVENT_CHANNEL))
@@ -36,6 +36,7 @@ class HubFullError(Exception):
 @dataclass(eq=False)
 class Subscription:
     queue: asyncio.Queue[str]
+    audience: Audience
     overflowed: bool = False
     closed: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -80,10 +81,10 @@ class EventHub:
         self._subscribers.clear()
 
     @contextlib.asynccontextmanager
-    async def subscribe(self) -> AsyncGenerator[Subscription]:
+    async def subscribe(self, audience: Audience) -> AsyncGenerator[Subscription]:
         if len(self._subscribers) >= self._max_clients:
             raise HubFullError
-        subscription = Subscription(queue=asyncio.Queue(maxsize=self._queue_size))
+        subscription = Subscription(queue=asyncio.Queue(maxsize=self._queue_size), audience=audience)
         self._subscribers.add(subscription)
         try:
             yield subscription
@@ -91,7 +92,14 @@ class EventHub:
             self._subscribers.discard(subscription)
 
     def broadcast(self, payload: str) -> None:
+        """Deliver to every subscriber whose audience may see this event (parsed once)."""
+        route = route_of(payload)
+        if route is None:
+            logger.warning("events.unroutable_dropped")
+            return
         for subscription in list(self._subscribers):
+            if not subscription.audience.accepts(route):
+                continue
             try:
                 subscription.queue.put_nowait(payload)
             except asyncio.QueueFull:

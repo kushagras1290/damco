@@ -164,3 +164,4 @@ class RunFinish(BaseModel):
     stats: dict[str, float | int | str | bool | None] = Field(default_factory=dict)
     error: str | None = None
     workspace_id: str | None = None
+    source_id: str | None = None  # set for discovery runs (routes realtime events to followers)

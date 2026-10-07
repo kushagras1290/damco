@@ -5,7 +5,6 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -13,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from jobpulse.db.models import Company, Job, Source, SourceCheckpoint
 from jobpulse_core.domain.models import SourceCheckpoint as CheckpointState
+from jobpulse_core.domain.models import SourceDefinition
+from jobpulse_core.sources.locator import source_locator
 
 
 class SourceRepository:
@@ -34,8 +35,7 @@ class SourceRepository:
         *,
         company_id: uuid.UUID,
         name: str,
-        kind: str,
-        config: dict[str, Any],
+        definition: SourceDefinition,
         poll_interval_seconds: int,
         min_poll_interval_seconds: int,
         max_poll_interval_seconds: int,
@@ -43,8 +43,9 @@ class SourceRepository:
         source = Source(
             company_id=company_id,
             name=name,
-            kind=kind,
-            config=config,
+            kind=definition.kind.value,
+            locator=source_locator(definition),
+            config=definition.model_dump(mode="json"),
             poll_interval_seconds=poll_interval_seconds,
             min_poll_interval_seconds=min_poll_interval_seconds,
             max_poll_interval_seconds=max_poll_interval_seconds,
@@ -60,8 +61,13 @@ class SourceRepository:
             statement = statement.with_for_update(of=Source)
         return (await self._session.execute(statement)).scalar_one_or_none()
 
-    async def get_by_kind_name(self, kind: str, name: str) -> Source | None:
-        statement = select(Source).where(Source.kind == kind, Source.name == name)
+    async def get_by_board(self, definition: SourceDefinition, *, for_update: bool = False) -> Source | None:
+        """The catalogue source for this board, if any workspace already added it."""
+        statement = select(Source).where(
+            Source.kind == definition.kind.value, Source.locator == source_locator(definition)
+        )
+        if for_update:
+            statement = statement.with_for_update(of=Source)
         return (await self._session.execute(statement)).scalar_one_or_none()
 
     async def list(self, *, enabled: bool | None = None, limit: int = 100, offset: int = 0) -> Sequence[Source]:

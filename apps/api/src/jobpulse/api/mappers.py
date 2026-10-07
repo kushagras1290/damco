@@ -36,7 +36,8 @@ def job_summary(view: JobView) -> JobSummary:
     )
 
 
-def source_out(source: Source, open_jobs: int) -> SourceOut:
+def source_out(source: Source, open_jobs: int, *, paused: bool, editable: bool | None) -> SourceOut:
+    """``editable``: whether this workspace may change shared settings (None = not computed)."""
     return SourceOut(
         id=source.id,
         name=source.name,
@@ -56,6 +57,8 @@ def source_out(source: Source, open_jobs: int) -> SourceOut:
         last_error=source.last_error,
         open_jobs=open_jobs,
         created_at=source.created_at,
+        paused=paused,
+        editable=editable,
     )
 
 

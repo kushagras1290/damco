@@ -206,6 +206,8 @@ class Source(Base):
     company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id", ondelete="RESTRICT"), index=True)
     name: Mapped[str] = mapped_column(String(200))
     kind: Mapped[str] = mapped_column(String(30))
+    # What the board points at (ATS token or normalized URL): one shared poller per board.
+    locator: Mapped[str] = mapped_column(String(2048))
     config: Mapped[dict[str, Any]] = mapped_column(JSONB)
     enabled: Mapped[bool] = mapped_column(Boolean, server_default="true")
     poll_interval_seconds: Mapped[int] = mapped_column(Integer, server_default="900")
@@ -223,7 +225,7 @@ class Source(Base):
     company: Mapped[Company] = relationship(lazy="joined")
 
     __table_args__ = (
-        UniqueConstraint("kind", "name", name="uq_sources_kind_name"),
+        UniqueConstraint("kind", "locator", name="uq_sources_kind_locator"),
         CheckConstraint(
             "min_poll_interval_seconds <= poll_interval_seconds AND poll_interval_seconds <= max_poll_interval_seconds",
             name="poll_interval_bounds",
@@ -243,6 +245,8 @@ class SourceSubscription(Base):
     source_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True, index=True
     )
+    # Paused for this workspace only: no evaluations here; the board polls while anyone is active.
+    paused: Mapped[bool] = mapped_column(Boolean, server_default="false")
     created_at: Mapped[datetime] = _created()
 
 

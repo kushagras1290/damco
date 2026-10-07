@@ -15,6 +15,7 @@ import { useLiveFeed } from "@/lib/stores/live-feed";
 import { formatSeconds, timeAgo } from "@/lib/utils";
 
 export function SourceHealth({ source }: { source: Source }) {
+  if (source.paused) return <Badge tone="warning">paused</Badge>;
   if (!source.enabled) return <Badge>disabled</Badge>;
   if (source.circuit_open_until && new Date(source.circuit_open_until) > new Date()) {
     return <Badge tone="danger">circuit open</Badge>;

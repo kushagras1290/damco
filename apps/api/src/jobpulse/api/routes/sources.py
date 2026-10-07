@@ -1,11 +1,11 @@
-"""/api/v1/sources - manage job sources and trigger ingestion."""
+"""/api/v1/sources - the job boards a workspace follows (shared, deduplicated catalogue sources)."""
 
 from __future__ import annotations
 
 import uuid
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, status
+from fastapi import APIRouter, BackgroundTasks, Response, status
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.exc import IntegrityError
 from temporalio.client import Client
@@ -13,13 +13,15 @@ from temporalio.client import Client
 from jobpulse.api.deps import Ctx, Paging, Temporal
 from jobpulse.api.mappers import source_out
 from jobpulse.api.schemas import ActionAccepted, Page, SourceCreate, SourceOut, SourcePatch
-from jobpulse.api.tenancy import Admin, Session, Viewer
+from jobpulse.api.tenancy import Admin, Session, Viewer, system_section
 from jobpulse.core.config import Settings
 from jobpulse.core.errors import ConflictError, NotFoundError
+from jobpulse.db.models import Source, SourceSubscription
 from jobpulse.repositories.activity import AuditRepository
 from jobpulse.repositories.sources import SourceRepository
 from jobpulse.repositories.tenancy import SubscriptionRepository
 from jobpulse.services import temporal as temporal_service
+from jobpulse.services.accounts import Account
 from jobpulse.services.temporal import WorkflowServiceError
 from jobpulse_core.domain.models import SourceDefinition, SourceKind
 from jobpulse_core.errors import SourceFetchError, UnsafeUrlError, ValidationError
@@ -69,14 +71,46 @@ async def _validate_definition(body: SourceCreate, ctx: Ctx) -> SourceDefinition
     return definition
 
 
+async def _source_for_workspace(session: Session, source_id: uuid.UUID) -> tuple[Source, SourceSubscription]:
+    """The source and this workspace's subscription; 404 if the workspace does not follow it."""
+    subscription = await SubscriptionRepository(session).subscription(source_id)
+    source = await SourceRepository(session).get(source_id, for_update=True) if subscription else None
+    if source is None or subscription is None:
+        raise NotFoundError("source not found")
+    return source, subscription
+
+
+async def _refresh_activity(session: Session, account: Account, source: Source) -> tuple[bool, int]:
+    """Recompute whether the shared board should poll (any unpaused follower anywhere).
+
+    Returns (polling-state changed, total followers). Follower counts span workspaces, so this
+    runs in a short system-scope section and only ever returns aggregates.
+    """
+    async with system_section(session, account):
+        total, active = await SubscriptionRepository(session).follower_counts(source.id)
+    should_poll = active > 0
+    changed = source.enabled != should_poll
+    if changed:
+        source.enabled = should_poll
+        if should_poll:
+            source.consecutive_failures = 0
+            source.circuit_open_until = None
+        await session.flush()
+    return changed, total
+
+
+async def _out(session: Session, source: Source, *, paused: bool, editable: bool | None) -> SourceOut:
+    counts = await SourceRepository(session).job_counts([source.id])
+    return source_out(source, counts.get(source.id, 0), paused=paused, editable=editable)
+
+
 @router.get("", response_model=Page[SourceOut])
 async def list_sources(_: Viewer, session: Session, paging: Paging) -> Page[SourceOut]:
-    repo = SourceRepository(session)
     subscriptions = SubscriptionRepository(session)
     rows = await subscriptions.subscribed_sources(limit=paging.limit, offset=paging.offset)
-    counts = await repo.job_counts([row.id for row in rows])
+    counts = await SourceRepository(session).job_counts([source.id for source, _ in rows])
     return Page(
-        items=[source_out(row, counts.get(row.id, 0)) for row in rows],
+        items=[source_out(source, counts.get(source.id, 0), paused=paused, editable=None) for source, paused in rows],
         total=await subscriptions.count(),
         limit=paging.limit,
         offset=paging.offset,
@@ -85,12 +119,11 @@ async def list_sources(_: Viewer, session: Session, paging: Paging) -> Page[Sour
 
 @router.get("/{source_id}", response_model=SourceOut)
 async def get_source(source_id: uuid.UUID, _: Viewer, session: Session) -> SourceOut:
-    repo = SourceRepository(session)
-    source = await repo.get(source_id)
-    if source is None:
+    subscription = await SubscriptionRepository(session).subscription(source_id)
+    source = await SourceRepository(session).get(source_id) if subscription else None
+    if source is None or subscription is None:
         raise NotFoundError("source not found")
-    counts = await repo.job_counts([source.id])
-    return source_out(source, counts.get(source.id, 0))
+    return await _out(session, source, paused=subscription.paused, editable=None)
 
 
 @router.post("", response_model=SourceOut, status_code=status.HTTP_201_CREATED)
@@ -102,33 +135,44 @@ async def create_source(
     client: Temporal,
     background: BackgroundTasks,
 ) -> SourceOut:
+    """Add a board. If any workspace already follows the same board, follow that shared source."""
     definition = await _validate_definition(body, ctx)
     repo = SourceRepository(session)
-    if await repo.get_by_kind_name(definition.kind.value, body.name) is not None:
-        raise ConflictError("a source with this kind and name already exists")
-    company = await repo.upsert_company(name=definition.company_name, domain=definition.company_domain)
-    try:
-        source = await repo.create(
-            company_id=company.id,
-            name=body.name,
-            kind=definition.kind.value,
-            config=definition.model_dump(mode="json"),
-            poll_interval_seconds=body.poll_interval_seconds,
-            min_poll_interval_seconds=body.min_poll_interval_seconds,
-            max_poll_interval_seconds=body.max_poll_interval_seconds,
-        )
-    except IntegrityError as exc:
-        raise ConflictError("source conflicts with an existing source") from exc
+    subscriptions = SubscriptionRepository(session)
+    source = await repo.get_by_board(definition, for_update=True)
+    created = source is None
+    if source is None:
+        company = await repo.upsert_company(name=definition.company_name, domain=definition.company_domain)
+        try:
+            async with session.begin_nested():
+                source = await repo.create(
+                    company_id=company.id,
+                    name=body.name,
+                    definition=definition,
+                    poll_interval_seconds=body.poll_interval_seconds,
+                    min_poll_interval_seconds=body.min_poll_interval_seconds,
+                    max_poll_interval_seconds=body.max_poll_interval_seconds,
+                )
+        except IntegrityError:
+            # Another workspace added the same board concurrently: follow theirs.
+            source = await repo.get_by_board(definition, for_update=True)
+            created = False
+            if source is None:
+                raise ConflictError("source conflicts with an existing source") from None
+    elif await subscriptions.subscription(source.id) is not None:
+        raise ConflictError("this workspace already follows this board")
+    await subscriptions.subscribe(source.id)
+    changed, total = await _refresh_activity(session, account, source)
     await AuditRepository(session).record(
         actor=account.principal.actor,
-        action="source.create",
+        action="source.create" if created else "source.follow",
         entity_type="source",
         entity_id=str(source.id),
         payload={"kind": source.kind, "name": source.name},
     )
-    await SubscriptionRepository(session).subscribe(source.id)  # the creator's workspace follows it
-    background.add_task(_apply_polling, client, ctx.settings, str(source.id), enabled=True)
-    return source_out(source, 0)
+    if created or changed:
+        background.add_task(_apply_polling, client, ctx.settings, str(source.id), enabled=True)
+    return await _out(session, source, paused=False, editable=total <= 1 or account.principal.platform_admin)
 
 
 @router.patch("/{source_id}", response_model=SourceOut)
@@ -141,23 +185,28 @@ async def update_source(
     client: Temporal,
     background: BackgroundTasks,
 ) -> SourceOut:
-    repo = SourceRepository(session)
-    source = await repo.get(source_id, for_update=True)
-    if source is None:
-        raise NotFoundError("source not found")
+    """``enabled`` pauses/resumes the board for this workspace only. Name and polling intervals
+    are shared settings: editable by the board's sole follower or a platform admin."""
+    source, subscription = await _source_for_workspace(session, source_id)
     changes = body.model_dump(exclude_unset=True)
-    low = changes.get("min_poll_interval_seconds", source.min_poll_interval_seconds)
-    high = changes.get("max_poll_interval_seconds", source.max_poll_interval_seconds)
-    current = changes.get("poll_interval_seconds", min(max(source.poll_interval_seconds, low), high))
-    if not low <= current <= high:
-        raise ValidationError("require min_poll_interval <= poll_interval <= max_poll_interval")
-    for field, value in changes.items():
-        setattr(source, field, value)
-    source.poll_interval_seconds = current
-    if changes.get("enabled") is True:
-        source.consecutive_failures = 0
-        source.circuit_open_until = None
+    shared_fields = {key: value for key, value in changes.items() if key != "enabled"}
+    if shared_fields:
+        async with system_section(session, account):
+            total, _ = await SubscriptionRepository(session).follower_counts(source.id)
+        if total > 1 and not account.principal.platform_admin:
+            raise ConflictError("this board is shared with other workspaces; only pausing is available")
+        low = shared_fields.get("min_poll_interval_seconds", source.min_poll_interval_seconds)
+        high = shared_fields.get("max_poll_interval_seconds", source.max_poll_interval_seconds)
+        current = shared_fields.get("poll_interval_seconds", min(max(source.poll_interval_seconds, low), high))
+        if not low <= current <= high:
+            raise ValidationError("require min_poll_interval <= poll_interval <= max_poll_interval")
+        for field, value in shared_fields.items():
+            setattr(source, field, value)
+        source.poll_interval_seconds = current
+    if "enabled" in changes:
+        subscription.paused = not changes["enabled"]
     await session.flush()
+    changed, total = await _refresh_activity(session, account, source)
     await AuditRepository(session).record(
         actor=account.principal.actor,
         action="source.update",
@@ -165,10 +214,33 @@ async def update_source(
         entity_id=str(source_id),
         payload=changes,
     )
-    if "enabled" in changes:
+    if changed:
         background.add_task(_apply_polling, client, ctx.settings, str(source_id), enabled=source.enabled)
-    counts = await repo.job_counts([source.id])
-    return source_out(source, counts.get(source.id, 0))
+    return await _out(
+        session, source, paused=subscription.paused, editable=total <= 1 or account.principal.platform_admin
+    )
+
+
+@router.delete("/{source_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def unfollow_source(
+    source_id: uuid.UUID,
+    account: Admin,
+    session: Session,
+    ctx: Ctx,
+    client: Temporal,
+    background: BackgroundTasks,
+) -> Response:
+    """Stop following a board. Its jobs stay in the shared catalogue; polling stops when the
+    last workspace leaves."""
+    source, subscription = await _source_for_workspace(session, source_id)
+    await SubscriptionRepository(session).unsubscribe(subscription)
+    changed, _ = await _refresh_activity(session, account, source)
+    await AuditRepository(session).record(
+        actor=account.principal.actor, action="source.unfollow", entity_type="source", entity_id=str(source_id)
+    )
+    if changed:
+        background.add_task(_apply_polling, client, ctx.settings, str(source_id), enabled=False)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/{source_id}/sync", response_model=ActionAccepted, status_code=status.HTTP_202_ACCEPTED)
@@ -179,11 +251,9 @@ async def sync_source(
     ctx: Ctx,
     client: Temporal,
 ) -> ActionAccepted:
-    source = await SourceRepository(session).get(source_id)
-    if source is None:
-        raise NotFoundError("source not found")
-    if not source.enabled:
-        raise ConflictError("source is disabled")
+    source, subscription = await _source_for_workspace(session, source_id)
+    if subscription.paused or not source.enabled:
+        raise ConflictError("source is paused")
     workflow_id = await temporal_service.trigger_sync(client, ctx.settings, str(source_id))
     await AuditRepository(session).record(
         actor=account.principal.actor,

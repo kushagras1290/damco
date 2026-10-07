@@ -174,6 +174,10 @@ export interface Source {
   last_error: string | null;
   open_jobs: number;
   created_at: string;
+  /** Paused for the current workspace only (the shared board may still poll for others). */
+  paused: boolean;
+  /** Whether this workspace may change shared settings (null when not computed). */
+  editable: boolean | null;
 }
 
 export interface Run {

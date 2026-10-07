@@ -82,6 +82,7 @@ class SourceDiscoveryWorkflow:
                 workflow_id=info.workflow_id,
                 run_id=info.run_id,
                 status="completed" if summary.status != "failed" else "failed",
+                source_id=ref.source_id,
                 stats={
                     "new_jobs": summary.new_jobs,
                     "updated_jobs": summary.updated_jobs,

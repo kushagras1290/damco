@@ -185,6 +185,9 @@ class RunActivities:
                     {
                         "workflow_type": activity.info().workflow_type,
                         "workflow_id": record.workflow_id,
+                        # Routing: board followers (discovery) or the evaluation's workspace.
+                        "source_id": record.source_id,
+                        "workspace_id": record.workspace_id,
                         "status": record.status,
                         "error": record.error,
                         "stats": dict(record.stats),

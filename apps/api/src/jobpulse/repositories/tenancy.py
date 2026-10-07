@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -39,22 +38,47 @@ class SubscriptionRepository:
         self._session = session
 
     async def subscribe(self, source_id: uuid.UUID, *, workspace_id: uuid.UUID | None = None) -> None:
-        """Follow a source. ``workspace_id`` defaults to the transaction's workspace scope."""
-        values: dict[str, uuid.UUID] = {"source_id": source_id}
+        """Follow (or resume) a source. ``workspace_id`` defaults to the transaction's workspace."""
+        values: dict[str, object] = {"source_id": source_id, "paused": False}
         if workspace_id is not None:
             values["workspace_id"] = workspace_id
-        await self._session.execute(insert(SourceSubscription).values(**values).on_conflict_do_nothing())
-
-    async def subscribed_sources(self, *, limit: int, offset: int) -> Sequence[Source]:
-        """Sources the current workspace follows (RLS limits subscriptions to this workspace)."""
         statement = (
-            select(Source)
+            insert(SourceSubscription)
+            .values(**values)
+            .on_conflict_do_update(
+                index_elements=[SourceSubscription.workspace_id, SourceSubscription.source_id],
+                set_={"paused": False},
+            )
+        )
+        await self._session.execute(statement)
+
+    async def subscription(self, source_id: uuid.UUID) -> SourceSubscription | None:
+        """The current workspace's subscription (RLS: never another workspace's)."""
+        statement = select(SourceSubscription).where(SourceSubscription.source_id == source_id).with_for_update()
+        return (await self._session.execute(statement)).scalar_one_or_none()
+
+    async def unsubscribe(self, subscription: SourceSubscription) -> None:
+        await self._session.delete(subscription)
+        await self._session.flush()
+
+    async def follower_counts(self, source_id: uuid.UUID) -> tuple[int, int]:
+        """(all followers, unpaused followers) across workspaces - system scope only."""
+        statement = select(func.count(), func.count().filter(SourceSubscription.paused.is_(False))).where(
+            SourceSubscription.source_id == source_id
+        )
+        total, active = (await self._session.execute(statement)).one()
+        return int(total), int(active)
+
+    async def subscribed_sources(self, *, limit: int, offset: int) -> list[tuple[Source, bool]]:
+        """(source, paused) for sources the current workspace follows (RLS-limited)."""
+        statement = (
+            select(Source, SourceSubscription.paused)
             .join(SourceSubscription, SourceSubscription.source_id == Source.id)
             .order_by(Source.created_at.desc())
             .limit(limit)
             .offset(offset)
         )
-        return (await self._session.execute(statement)).scalars().all()
+        return [(row[0], bool(row[1])) for row in (await self._session.execute(statement)).all()]
 
     async def count(self) -> int:
         return int((await self._session.execute(select(func.count()).select_from(SourceSubscription))).scalar_one())
@@ -71,7 +95,7 @@ class SubscriptionRepository:
         statement = (
             select(Profile.workspace_id, Profile.id)
             .join(SourceSubscription, SourceSubscription.workspace_id == Profile.workspace_id)
-            .where(SourceSubscription.source_id == source_id)
+            .where(SourceSubscription.source_id == source_id, SourceSubscription.paused.is_(False))
             .order_by(Profile.workspace_id, Profile.created_at)
         )
         return [(row[0], row[1]) for row in (await self._session.execute(statement)).all()]

@@ -117,8 +117,10 @@ simply one workspace.
 ## Delivery plan (each step shippable, tests first)
 1. ✅ Workspaces, memberships, `workspace_id` + RLS, Default-workspace migration, isolation tests.
 2. ✅ Workspace-aware auth (`wid` claim, roles), invitations, workspace switcher, `SIGNUP_POLICY`.
-3. Source deduplication + subscriptions; per-profile evaluation fan-out.
-4. Workspace-scoped realtime, cache, rate limits and quotas.
+3. ✅ Source deduplication by `(kind, locator)` + per-workspace follow/pause/unfollow; per-profile
+   evaluation fan-out. Shared settings (name, intervals) editable by the sole follower or a
+   platform admin; follower counts never exposed to tenants.
+4. ✅ Workspace-scoped realtime (per-tenant event routing, fail-closed), workspace-keyed cache.
 5. Plans and limits, then Razorpay subscriptions (checkout, webhooks, grace period); Stripe after.
 6. Sign-up flow with Google, Microsoft Entra ID and email magic link; export/delete.
 

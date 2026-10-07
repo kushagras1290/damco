@@ -7,6 +7,7 @@ import { useEffect } from "react";
 
 import { Badge } from "@/components/ui/primitives";
 import { describeEvent, parseLiveEvent, staleQueryKeys } from "@/lib/api/events";
+import { useMe } from "@/lib/api/hooks";
 import { type LiveStatus, useLiveFeed } from "@/lib/stores/live-feed";
 import { cn } from "@/lib/utils";
 
@@ -23,8 +24,14 @@ const TOAST_TTL_MS = 8_000;
  */
 export function LiveEvents() {
   const client = useQueryClient();
+  // The stream's audience is fixed when it connects, so a workspace switch must reconnect -
+  // and we connect only once the workspace is known (one stream per page, not two).
+  const me = useMe();
+  const workspaceId = me.data?.workspace?.id ?? null;
+  const ready = me.isSuccess;
 
   useEffect(() => {
+    if (!ready) return;
     const { push, setStatus } = useLiveFeed.getState();
     const pending = new Map<string, readonly unknown[]>();
     let source: EventSource | null = null;
@@ -90,7 +97,7 @@ export function LiveEvents() {
       if (flushTimer) clearTimeout(flushTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
     };
-  }, [client]);
+  }, [client, ready, workspaceId]);
 
   return <MatchToasts />;
 }

@@ -128,6 +128,14 @@ export function useUpdateSource(id: string) {
   });
 }
 
+export function useUnfollowSource(id: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.delete(`/sources/${id}`),
+    onSuccess: () => client.invalidateQueries({ queryKey: keys.sources }),
+  });
+}
+
 export const useSyncSource = (id: string) =>
   useMutation({ mutationFn: () => api.post<ActionAccepted>(`/sources/${id}/sync`) });
 

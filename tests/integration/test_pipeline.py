@@ -26,7 +26,7 @@ from jobpulse.seed import apply_seed, load_seed, start_polling
 from jobpulse.services.context import AppContext
 from jobpulse.services.evaluation import EvaluationService
 from jobpulse.services.event_hub import EventHub
-from jobpulse.services.events import EventType, publish
+from jobpulse.services.events import Audience, EventType, publish
 from jobpulse.services.ingestion import IngestionService
 from jobpulse_core.contracts import JobRef, PollRecord
 from jobpulse_core.domain.models import SourceDefinition, SourceKind
@@ -60,8 +60,7 @@ async def create_source(ctx: AppContext, name: str = "Acme Greenhouse", board: s
         source = await repo.create(
             company_id=company.id,
             name=name,
-            kind="greenhouse",
-            config=definition.model_dump(mode="json"),
+            definition=definition,
             poll_interval_seconds=900,
             min_poll_interval_seconds=300,
             max_poll_interval_seconds=3600,
@@ -288,9 +287,9 @@ async def test_llm_daily_limit_degrades_enrichment(ctx: AppContext) -> None:
     assert result.detail == "llm daily request limit reached"
 
 
-async def _collect(hub: EventHub, until_type: str) -> list[dict[str, object]]:
+async def _collect(hub: EventHub, until_type: str, audience: Audience) -> list[dict[str, object]]:
     received: list[dict[str, object]] = []
-    async with hub.subscribe() as subscription:
+    async with hub.subscribe(audience) as subscription:
         async with asyncio.timeout(10):
             while True:
                 event = json.loads(await subscription.queue.get())
@@ -305,14 +304,16 @@ async def test_events_are_delivered_only_after_commit(ctx: AppContext) -> None:
     try:
         async with asyncio.timeout(10):
             await hub.wait_connected()
-        collector = asyncio.create_task(_collect(hub, "job.matched"))
+        collector = asyncio.create_task(_collect(hub, "job.matched", Audience(workspace_id="ws-1")))
         await asyncio.sleep(0.1)
         with contextlib.suppress(RuntimeError):
             async with transaction(ctx.sessions) as session:
-                await publish(session, EventType.JOB_EVALUATED, {"job_id": "rolled-back"})
+                await publish(session, EventType.JOB_EVALUATED, {"workspace_id": "ws-1", "job_id": "rolled-back"})
                 raise RuntimeError  # rollback: must never be delivered
         async with transaction(ctx.sessions) as session:
-            await publish(session, EventType.JOB_MATCHED, {"job_id": "committed", "score": 0.91})
+            await publish(
+                session, EventType.JOB_MATCHED, {"workspace_id": "ws-1", "job_id": "committed", "score": 0.91}
+            )
         events = await collector
         assert [e["data"]["job_id"] for e in events] == ["committed"]  # type: ignore[index]
     finally:
@@ -326,10 +327,14 @@ async def test_discovery_publishes_realtime_events(ctx: AppContext) -> None:
         async with asyncio.timeout(10):
             await hub.wait_connected()
         source_id = await create_source(ctx)
-        collector = asyncio.create_task(_collect(hub, "jobs.discovered"))
-        await asyncio.sleep(0.1)
-        await discover(ctx, source_id, load_fixture("greenhouse/board.json"))
-        events = await collector
+        follower = Audience(workspace_id="ws-follower", source_ids=frozenset({source_id}))
+        stranger = Audience(workspace_id="ws-stranger", source_ids=frozenset({"some-other-board"}))
+        collector = asyncio.create_task(_collect(hub, "jobs.discovered", follower))
+        async with hub.subscribe(stranger) as stranger_stream:
+            await asyncio.sleep(0.1)
+            await discover(ctx, source_id, load_fixture("greenhouse/board.json"))
+            events = await collector
+            assert stranger_stream.queue.empty()  # board events never reach non-followers
     finally:
         await hub.stop()
     stages = [e["data"].get("stage") for e in events]  # type: ignore[union-attr]

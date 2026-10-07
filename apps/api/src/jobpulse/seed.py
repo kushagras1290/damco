@@ -109,7 +109,7 @@ async def apply_seed(ctx: AppContext, seed: SeedFile, *, workspace_id: uuid.UUID
             if definition.kind is SourceKind.DEMO and not ctx.settings.demo_mode:
                 msg = f"seed source {item.name!r} is a demo source; enable DEMO_MODE to seed it"
                 raise ValueError(msg)
-            existing = await repo.get_by_kind_name(definition.kind.value, item.name)
+            existing = await repo.get_by_board(definition)
             if existing is not None:
                 await subscriptions.subscribe(existing.id)
                 if existing.enabled:
@@ -119,8 +119,7 @@ async def apply_seed(ctx: AppContext, seed: SeedFile, *, workspace_id: uuid.UUID
             source = await repo.create(
                 company_id=company.id,
                 name=item.name,
-                kind=definition.kind.value,
-                config=definition.model_dump(mode="json"),
+                definition=definition,
                 poll_interval_seconds=item.poll_interval_seconds,
                 min_poll_interval_seconds=item.min_poll_interval_seconds,
                 max_poll_interval_seconds=3600,

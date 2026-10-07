@@ -10,6 +10,7 @@ PostgreSQL limits NOTIFY payloads to 8000 bytes; we cap well below that.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -71,3 +72,44 @@ async def publish(session: AsyncSession, event_type: EventType, data: dict[str, 
         text("SELECT pg_notify(:channel, :payload)"),
         {"channel": EVENT_CHANNEL, "payload": encode_event(event_type, data)},
     )
+
+
+@dataclass(frozen=True, slots=True)
+class EventRoute:
+    """Where an event may go: one workspace, or followers of one board."""
+
+    workspace_id: str | None = None
+    source_id: str | None = None
+
+
+def route_of(payload: str) -> EventRoute | None:
+    """Per-profile events carry ``workspace_id``; board events carry ``source_id``.
+
+    Anything else is unroutable and must be dropped (fail closed).
+    """
+    try:
+        event = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    data = event.get("data") if isinstance(event, dict) else None
+    if not isinstance(data, dict):
+        return None
+    workspace_id, source_id = data.get("workspace_id"), data.get("source_id")
+    if isinstance(workspace_id, str):
+        return EventRoute(workspace_id=workspace_id)
+    if isinstance(source_id, str):
+        return EventRoute(source_id=source_id)
+    return None
+
+
+@dataclass
+class Audience:
+    """One stream's recipient: a workspace plus the boards it follows (refreshed over time)."""
+
+    workspace_id: str | None
+    source_ids: frozenset[str] = frozenset()
+
+    def accepts(self, route: EventRoute) -> bool:
+        if route.workspace_id is not None:
+            return route.workspace_id == self.workspace_id
+        return route.source_id is not None and route.source_id in self.source_ids

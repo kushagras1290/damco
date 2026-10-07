@@ -235,6 +235,8 @@ class SourceOut(BaseModel):
     last_error: str | None
     open_jobs: int
     created_at: datetime
+    paused: bool = False  # paused for the requesting workspace only
+    editable: bool | None = None  # may change shared settings (name, intervals)
 
 
 # ------------------------------------------------------------------ runs

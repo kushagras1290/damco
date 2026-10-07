@@ -1,13 +1,14 @@
 "use client";
 
-import { Pause, Play, RefreshCw } from "lucide-react";
+import { LogOut, Pause, Play, RefreshCw } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 import { ErrorState, LoadingRows, PageHeader } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/primitives";
 import { TBody, TD, TH, THead, TR, Table } from "@/components/ui/table";
 import { SourceHealth } from "@/features/sources/sources-view";
-import { useCan, useRuns, useSource, useSyncSource, useUpdateSource } from "@/lib/api/hooks";
+import { useCan, useRuns, useSource, useSyncSource, useUnfollowSource, useUpdateSource } from "@/lib/api/hooks";
 import { formatSeconds, timeAgo } from "@/lib/utils";
 
 export function SourceDetailView({ id }: { id: string }) {
@@ -16,6 +17,8 @@ export function SourceDetailView({ id }: { id: string }) {
   const canEdit = useCan("admin");
   const update = useUpdateSource(id);
   const sync = useSyncSource(id);
+  const unfollow = useUnfollowSource(id);
+  const router = useRouter();
 
   if (isPending) return <LoadingRows rows={6} />;
   if (error) return <ErrorState error={error} />;
@@ -28,12 +31,24 @@ export function SourceDetailView({ id }: { id: string }) {
         actions={
           canEdit ? (
             <>
-              <Button variant="outline" onClick={() => sync.mutate()} disabled={!source.enabled || sync.isPending}>
+              <Button variant="outline" onClick={() => sync.mutate()} disabled={source.paused || sync.isPending}>
                 <RefreshCw aria-hidden /> {sync.isSuccess ? "Sync queued" : "Sync now"}
               </Button>
-              <Button variant="outline" onClick={() => update.mutate({ enabled: !source.enabled })} disabled={update.isPending}>
-                {source.enabled ? <Pause aria-hidden /> : <Play aria-hidden />}
-                {source.enabled ? "Disable" : "Enable"}
+              <Button
+                variant="outline"
+                onClick={() => update.mutate({ enabled: source.paused })}
+                disabled={update.isPending}
+                title="Pausing affects only this workspace"
+              >
+                {source.paused ? <Play aria-hidden /> : <Pause aria-hidden />}
+                {source.paused ? "Resume" : "Pause"}
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => unfollow.mutate(undefined, { onSuccess: () => router.push("/sources") })}
+                disabled={unfollow.isPending}
+              >
+                <LogOut aria-hidden /> Unfollow
               </Button>
             </>
           ) : null
@@ -41,6 +56,12 @@ export function SourceDetailView({ id }: { id: string }) {
       />
       {sync.error ? <ErrorState error={sync.error} /> : null}
       {update.error ? <ErrorState error={update.error} /> : null}
+      {unfollow.error ? <ErrorState error={unfollow.error} /> : null}
+      {source.paused ? (
+        <p className="mb-4 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm">
+          Paused for this workspace: new postings are not evaluated for your profiles until you resume.
+        </p>
+      ) : null}
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Card>
