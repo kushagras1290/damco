@@ -33,7 +33,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # ---------------------------------------------------------------- runtime base
 FROM python:${PYTHON_VERSION}-slim-trixie AS runtime
-RUN groupadd --system --gid 10001 jobpulse \
+# The app runs from /opt/venv (built by uv); the base image's pip and its vendored
+# libraries (urllib3, msgpack, setuptools) are unused attack surface, so remove them.
+RUN python -m pip uninstall --yes --quiet pip \
+ && rm -rf /root/.cache \
+ && groupadd --system --gid 10001 jobpulse \
  && useradd --system --uid 10001 --gid jobpulse --home-dir /app --shell /usr/sbin/nologin jobpulse \
  && mkdir -p /app /data/snapshots && chown -R jobpulse:jobpulse /app /data
 COPY --from=build --chown=jobpulse:jobpulse /opt/venv /opt/venv

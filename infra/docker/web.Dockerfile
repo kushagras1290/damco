@@ -23,7 +23,11 @@ RUN API_JWT_SECRET=build-placeholder-not-a-secret-000000000 \
 FROM node:${NODE_VERSION}-trixie-slim AS runtime
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
 WORKDIR /app
-RUN groupadd --system --gid 10001 jobpulse && useradd --system --uid 10001 --gid jobpulse jobpulse
+# Runtime only executes `node server.js`: drop the unused package managers (and their
+# vendored dependencies) from the final image.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+ && groupadd --system --gid 10001 jobpulse && useradd --system --uid 10001 --gid jobpulse jobpulse
 COPY --from=build --chown=jobpulse:jobpulse /app/.next/standalone ./
 COPY --from=build --chown=jobpulse:jobpulse /app/.next/static ./.next/static
 USER jobpulse
