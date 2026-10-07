@@ -1,0 +1,78 @@
+[project]
+name = "jobpulse-workspace"
+version = "0.1.0"
+description = "JobPulse - event-driven AI job opportunity radar (uv workspace root)"
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+license = "MIT"
+dependencies = [
+    "jobpulse-core",
+    "jobpulse-api",
+    "jobpulse-worker",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["packages/python", "apps/api", "apps/worker"]
+
+[tool.uv.sources]
+jobpulse-core = { workspace = true }
+jobpulse-api = { workspace = true }
+jobpulse-worker = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "hypothesis>=6.168.5",
+    "respx>=0.23.1",
+    "testcontainers[postgres]>=4.15.0",
+    "mypy>=2.4.0",
+    "ruff>=0.16.10",
+    "pip-audit>=2.9.0",
+    "types-pyyaml>=6.0.12",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: requires Docker (Testcontainers PostgreSQL)",
+    "workflow: requires the Temporal test environment",
+]
+filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]
+
+[tool.coverage.run]
+source = ["jobpulse_core", "jobpulse", "jobpulse_worker"]
+branch = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+src = ["packages/python/src", "apps/api/src", "apps/worker/src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "RUF", "SIM", "PL", "PT", "TRY", "BLE"]
+ignore = ["PLR0913", "PLR2004", "TRY003", "PLR0911", "PLR0912"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "PLR2004", "S105", "S106"]
+"migrations/**" = ["E501"]
+"apps/api/src/jobpulse/api/routes/**" = ["PLR0917"]  # FastAPI dependency injection
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+plugins = ["pydantic.mypy"]
+mypy_path = ["packages/python/src", "apps/api/src", "apps/worker/src"]
+explicit_package_bases = true
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
+module = ["feedparser.*", "selectolax.*", "boto3.*", "botocore.*", "pgvector.*", "testcontainers.*", "playwright.*"]
+ignore_missing_imports = true

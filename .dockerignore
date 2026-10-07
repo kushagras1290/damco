@@ -1,0 +1,17 @@
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.mypy_cache
+**/.ruff_cache
+**/.pytest_cache
+**/.hypothesis
+**/node_modules
+**/.next
+apps/web
+tests
+docs
+.git
+.github
+.env
+.env.*
+.data

@@ -1,0 +1,57 @@
+# Render Blueprint: API web service + Temporal background worker, both pulled as prebuilt
+# images pushed to GHCR by .github/workflows/deploy.yml (which then triggers each deploy).
+# Neon, Temporal Cloud, R2 and Resend are external; supply their secrets in the dashboard.
+# If the GHCR packages are private, add a registry credential named `ghcr` in Render.
+
+services:
+  - type: web
+    name: jobpulse-api
+    runtime: image
+    image:
+      url: ghcr.io/kushagras1290/damco/jobpulse-api:latest
+    plan: starter
+    healthCheckPath: /health/ready
+    autoDeploy: false
+    envVars:
+      - { key: ENVIRONMENT, value: production }
+      - { key: STORAGE_BACKEND, value: r2 }
+      - { key: TEMPORAL_TLS, value: "true" }
+      - { key: DATABASE_URL, sync: false }
+      - { key: API_JWT_SECRET, sync: false }
+      - { key: CORS_ALLOWED_ORIGINS, sync: false }
+      - { key: TEMPORAL_ADDRESS, sync: false }
+      - { key: TEMPORAL_NAMESPACE, sync: false }
+      - { key: TEMPORAL_API_KEY, sync: false }
+      - { key: OPENAI_API_KEY, sync: false }
+      - { key: R2_ACCOUNT_ID, sync: false }
+      - { key: R2_ACCESS_KEY_ID, sync: false }
+      - { key: R2_SECRET_ACCESS_KEY, sync: false }
+      - { key: R2_BUCKET, sync: false }
+      - { key: SENTRY_DSN, sync: false }
+
+  - type: worker
+    name: jobpulse-worker
+    runtime: image
+    image:
+      url: ghcr.io/kushagras1290/damco/jobpulse-worker:latest
+    plan: starter
+    autoDeploy: false
+    envVars:
+      - { key: ENVIRONMENT, value: production }
+      - { key: STORAGE_BACKEND, value: r2 }
+      - { key: TEMPORAL_TLS, value: "true" }
+      - { key: DATABASE_URL, sync: false }
+      - { key: API_JWT_SECRET, sync: false }
+      - { key: TEMPORAL_ADDRESS, sync: false }
+      - { key: TEMPORAL_NAMESPACE, sync: false }
+      - { key: TEMPORAL_API_KEY, sync: false }
+      - { key: OPENAI_API_KEY, sync: false }
+      - { key: R2_ACCOUNT_ID, sync: false }
+      - { key: R2_ACCESS_KEY_ID, sync: false }
+      - { key: R2_SECRET_ACCESS_KEY, sync: false }
+      - { key: R2_BUCKET, sync: false }
+      - { key: RESEND_API_KEY, sync: false }
+      - { key: NOTIFICATION_FROM_EMAIL, sync: false }
+      - { key: WEBHOOK_SIGNING_SECRET, sync: false }
+      - { key: DASHBOARD_BASE_URL, sync: false }
+      - { key: SENTRY_DSN, sync: false }

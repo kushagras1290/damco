@@ -1,0 +1,34 @@
+{
+  "jobs": [
+    {
+      "id": 4012345,
+      "internal_job_id": 300111,
+      "title": "Senior AI Engineer (Remote)",
+      "updated_at": "2026-09-30T10:15:00-04:00",
+      "first_published": "2026-09-28T09:00:00-04:00",
+      "requisition_id": "AI-42",
+      "location": { "name": "Remote - Worldwide" },
+      "absolute_url": "https://boards.greenhouse.io/acme/jobs/4012345?gh_src=abc123&utm_source=linkedin",
+      "departments": [{ "id": 1, "name": "Engineering" }],
+      "content": "&lt;p&gt;We are a remote-first team building agentic AI.&lt;/p&gt;&lt;ul&gt;&lt;li&gt;4+ years of experience with Python and FastAPI&lt;/li&gt;&lt;li&gt;Experience with LLMs, RAG and PostgreSQL&lt;/li&gt;&lt;/ul&gt;&lt;script&gt;alert(1)&lt;/script&gt;"
+    },
+    {
+      "id": 4012346,
+      "title": "Staff Backend Engineer",
+      "updated_at": "2026-09-29T08:00:00Z",
+      "location": { "name": "San Francisco, CA" },
+      "absolute_url": "https://boards.greenhouse.io/acme/jobs/4012346",
+      "departments": [],
+      "content": "&lt;p&gt;Candidates must reside in the United States. 10+ years of experience required.&lt;/p&gt;"
+    },
+    {
+      "id": 4012347,
+      "title": "",
+      "updated_at": "2026-09-29T08:00:00Z",
+      "location": { "name": "Remote" },
+      "absolute_url": "https://boards.greenhouse.io/acme/jobs/4012347",
+      "content": "invalid: missing title"
+    }
+  ],
+  "meta": { "total": 3 }
+}

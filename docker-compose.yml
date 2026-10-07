@@ -1,0 +1,87 @@
+# Local development stack:  cp .env.example .env && docker compose up --build
+#   Web          http://localhost:3000
+#   API (docs)   http://localhost:8000/docs
+#   Temporal UI  http://localhost:8233
+
+name: jobpulse
+
+x-python-env: &python-env
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql+psycopg://jobpulse:${POSTGRES_PASSWORD:-jobpulse}@postgres:5432/jobpulse
+    TEMPORAL_ADDRESS: temporal:7233
+    STORAGE_BACKEND: local
+    LOCAL_STORAGE_PATH: /data/snapshots
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: jobpulse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jobpulse}
+      POSTGRES_DB: jobpulse
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [postgres-data:/var/lib/postgresql]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobpulse -d jobpulse"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  temporal:
+    # Single-binary dev server with the Web UI on :8233. In-memory by design: the worker
+    # re-creates every enabled source's polling workflow on startup, so restarts self-heal.
+    image: temporalio/temporal:1.9.1
+    entrypoint: ["temporal"]
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--ui-ip", "0.0.0.0"]
+    ports: ["127.0.0.1:7233:7233", "127.0.0.1:8233:8233"]
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  migrate:
+    build: { context: ., dockerfile: infra/docker/python.Dockerfile, target: api }
+    <<: *python-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  api:
+    build: { context: ., dockerfile: infra/docker/python.Dockerfile, target: api }
+    <<: *python-env
+    ports: ["127.0.0.1:8000:8000"]
+    volumes: [snapshots:/data/snapshots]
+    read_only: true
+    tmpfs: [/tmp]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      temporal: { condition: service_healthy }
+
+  worker:
+    build: { context: ., dockerfile: infra/docker/python.Dockerfile, target: worker }
+    <<: *python-env
+    volumes: [snapshots:/data/snapshots]
+    read_only: true
+    tmpfs: [/tmp]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      temporal: { condition: service_healthy }
+
+  web:
+    build: { context: apps/web, dockerfile: ../../infra/docker/web.Dockerfile }
+    env_file: .env
+    environment:
+      API_BASE_URL: http://api:8000
+      AUTH_URL: http://localhost:3000
+    ports: ["127.0.0.1:3000:3000"]
+    read_only: true
+    tmpfs: [/tmp, /app/.next/cache]
+    depends_on:
+      api: { condition: service_healthy }
+
+volumes:
+  postgres-data:
+  snapshots:

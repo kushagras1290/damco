@@ -1,0 +1,32 @@
+{
+  "apiVersion": "1",
+  "jobs": [
+    {
+      "id": "b8a7c6d5-0000-4000-8000-000000000001",
+      "title": "Founding Engineer, AI Platform",
+      "department": "Engineering",
+      "team": "Platform",
+      "employmentType": "FullTime",
+      "location": "Remote",
+      "secondaryLocations": [{ "location": "India" }, { "location": "Europe" }],
+      "isRemote": true,
+      "workplaceType": "Remote",
+      "isListed": true,
+      "publishedAt": "2026-10-01T12:00:00.000+00:00",
+      "jobUrl": "https://jobs.ashbyhq.com/initech/b8a7c6d5-0000-4000-8000-000000000001",
+      "applyUrl": "https://jobs.ashbyhq.com/initech/b8a7c6d5-0000-4000-8000-000000000001/application",
+      "descriptionHtml": "<p>Build our agentic AI platform with Python, Temporal and pgvector. 5+ years of experience. Must overlap 4 hours with CET.</p>",
+      "descriptionPlain": "Build our agentic AI platform with Python, Temporal and pgvector. 5+ years of experience. Must overlap 4 hours with CET."
+    },
+    {
+      "id": "b8a7c6d5-0000-4000-8000-000000000002",
+      "title": "Internal Tools Engineer",
+      "location": "New York, NY",
+      "isRemote": false,
+      "isListed": false,
+      "publishedAt": "2026-10-01T12:00:00.000+00:00",
+      "jobUrl": "https://jobs.ashbyhq.com/initech/b8a7c6d5-0000-4000-8000-000000000002",
+      "descriptionHtml": "<p>Unlisted role.</p>"
+    }
+  ]
+}

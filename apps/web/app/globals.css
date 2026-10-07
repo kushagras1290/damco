@@ -1,0 +1,116 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --radius: 0.6rem;
+  --background: oklch(0.985 0.002 250);
+  --foreground: oklch(0.18 0.02 260);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.18 0.02 260);
+  --muted: oklch(0.955 0.005 250);
+  --muted-foreground: oklch(0.5 0.02 260);
+  --border: oklch(0.91 0.006 250);
+  --input: oklch(0.91 0.006 250);
+  --ring: oklch(0.55 0.17 265);
+  --primary: oklch(0.5 0.19 265);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.955 0.01 260);
+  --secondary-foreground: oklch(0.25 0.03 260);
+  --accent: oklch(0.95 0.02 265);
+  --accent-foreground: oklch(0.3 0.08 265);
+  --success: oklch(0.6 0.15 155);
+  --warning: oklch(0.72 0.16 75);
+  --destructive: oklch(0.58 0.22 27);
+  --chart-1: oklch(0.55 0.19 265);
+  --chart-2: oklch(0.65 0.15 175);
+  --chart-3: oklch(0.72 0.16 75);
+  --chart-4: oklch(0.6 0.2 330);
+  --chart-5: oklch(0.58 0.22 27);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: oklch(0.16 0.015 260);
+    --foreground: oklch(0.95 0.005 250);
+    --card: oklch(0.2 0.018 260);
+    --card-foreground: oklch(0.95 0.005 250);
+    --muted: oklch(0.25 0.018 260);
+    --muted-foreground: oklch(0.7 0.015 255);
+    --border: oklch(0.3 0.02 260);
+    --input: oklch(0.32 0.02 260);
+    --ring: oklch(0.68 0.15 265);
+    --primary: oklch(0.68 0.16 265);
+    --primary-foreground: oklch(0.16 0.015 260);
+    --secondary: oklch(0.26 0.02 260);
+    --secondary-foreground: oklch(0.92 0.01 255);
+    --accent: oklch(0.28 0.04 265);
+    --accent-foreground: oklch(0.92 0.03 265);
+    --success: oklch(0.7 0.15 155);
+    --warning: oklch(0.78 0.15 75);
+    --destructive: oklch(0.65 0.2 27);
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-destructive: var(--destructive);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+/* Sanitized job descriptions rendered from the backend (nh3-cleaned). */
+.prose-job :where(p, ul, ol) {
+  margin-block: 0.6em;
+}
+.prose-job :where(ul) {
+  list-style: disc;
+  padding-left: 1.25rem;
+}
+.prose-job :where(ol) {
+  list-style: decimal;
+  padding-left: 1.25rem;
+}
+.prose-job :where(h1, h2, h3, h4) {
+  font-weight: 600;
+  margin-top: 1em;
+}
+.prose-job :where(a) {
+  color: var(--primary);
+  text-decoration: underline;
+}

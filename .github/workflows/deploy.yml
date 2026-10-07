@@ -1,0 +1,118 @@
+name: Deploy
+
+# main: test -> build -> push image -> migrate -> deploy API -> deploy worker -> deploy web -> smoke
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  build-push:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        include:
+          - { name: api, file: infra/docker/python.Dockerfile, target: api, context: . }
+          - { name: worker, file: infra/docker/python.Dockerfile, target: worker, context: . }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/jobpulse-${{ matrix.name }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}/jobpulse-${{ matrix.name }}:latest
+          cache-from: type=gha,scope=${{ matrix.name }}
+
+  migrate:
+    needs: build-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Run Alembic migrations against Neon
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          API_JWT_SECRET: ${{ secrets.API_JWT_SECRET }}
+        run: |
+          docker run --rm -e DATABASE_URL -e API_JWT_SECRET \
+            ghcr.io/${{ github.repository }}/jobpulse-api:${{ github.sha }} alembic upgrade head
+
+  deploy-backend:
+    needs: migrate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    strategy:
+      max-parallel: 1
+      matrix:
+        service: [api, worker]
+    steps:
+      - name: Trigger Render deploy (${{ matrix.service }})
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          SERVICE_ID: ${{ matrix.service == 'api' && secrets.RENDER_API_SERVICE_ID || secrets.RENDER_WORKER_SERVICE_ID }}
+          IMAGE: ghcr.io/${{ github.repository }}/jobpulse-${{ matrix.service }}:${{ github.sha }}
+        run: |
+          curl --fail-with-body --max-time 60 -sS -X POST \
+            -H "Authorization: Bearer ${RENDER_API_KEY}" -H "Content-Type: application/json" \
+            "https://api.render.com/v1/services/${SERVICE_ID}/deploys" \
+            -d "{\"imageUrl\": \"${IMAGE}\"}"
+
+  deploy-web:
+    needs: deploy-backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v5
+      - name: Deploy to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: npx --yes vercel@latest deploy --prod --token "$VERCEL_TOKEN"
+
+  smoke:
+    needs: deploy-web
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Smoke test
+        env:
+          API_URL: ${{ vars.PRODUCTION_API_URL }}
+          WEB_URL: ${{ vars.PRODUCTION_WEB_URL }}
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            if curl --fail -sS --max-time 10 "$API_URL/health/ready" && \
+               curl --fail -sS --max-time 10 "$WEB_URL/dashboard" -o /dev/null; then
+              echo "smoke ok"; exit 0
+            fi
+            sleep 10
+          done
+          echo "smoke failed"; exit 1

@@ -1,0 +1,238 @@
+"""REST API end-to-end through the ASGI app (auth, roles, validation, explainability)."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from typing import Any
+
+import httpx
+import pytest
+
+from jobpulse.api.deps import get_ctx, get_temporal
+from jobpulse.core.config import Settings
+from jobpulse.main import create_app
+from jobpulse.services.context import AppContext
+from tests.conftest import load_fixture
+from tests.integration.conftest import make_token
+from tests.integration.test_pipeline import create_source, discover
+
+pytestmark = pytest.mark.integration
+
+
+@dataclass
+class FakeHandle:
+    id: str
+
+    async def signal(self, *_: Any) -> None:
+        return None
+
+
+@dataclass
+class FakeTemporal:
+    started: list[dict[str, Any]] = field(default_factory=list)
+
+    async def start_workflow(self, workflow: str, arg: Any, **kwargs: Any) -> FakeHandle:
+        self.started.append({"workflow": workflow, "arg": arg, **kwargs})
+        return FakeHandle(id=kwargs["id"])
+
+    def get_workflow_handle(self, workflow_id: str) -> FakeHandle:
+        return FakeHandle(id=workflow_id)
+
+
+@pytest.fixture
+def temporal() -> FakeTemporal:
+    return FakeTemporal()
+
+
+@pytest.fixture
+async def api(settings: Settings, ctx: AppContext, temporal: FakeTemporal) -> AsyncIterator[httpx.AsyncClient]:
+    app = create_app(settings)
+    app.dependency_overrides[get_ctx] = lambda: ctx
+    app.dependency_overrides[get_temporal] = lambda: temporal
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client
+
+
+OWNER = {"Authorization": f"Bearer {make_token('OWNER')}"}
+DEMO = {"Authorization": f"Bearer {make_token('PUBLIC_DEMO', subject='visitor')}"}
+
+
+async def test_health_and_metrics(api: httpx.AsyncClient) -> None:
+    assert (await api.get("/health/live")).json() == {"status": "ok"}
+    assert (await api.get("/health/ready")).status_code == 200
+    metrics = await api.get("/metrics")
+    assert "jobs_discovered_total" in metrics.text
+
+
+async def test_security_headers_and_request_id(api: httpx.AsyncClient) -> None:
+    response = await api.get("/api/v1/jobs", headers={"X-Request-ID": "abcdef123456"})
+    assert response.status_code == 200
+    assert response.headers["x-request-id"] == "abcdef123456"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+
+
+async def test_public_demo_is_read_only(api: httpx.AsyncClient) -> None:
+    assert (await api.get("/api/v1/sources")).status_code == 200
+    body = {
+        "kind": "greenhouse",
+        "name": "x",
+        "company_name": "Acme",
+        "company_domain": "acme.io",
+        "board_token": "acme",
+    }
+    anonymous = await api.post("/api/v1/sources", json=body)
+    demo = await api.post("/api/v1/sources", json=body, headers=DEMO)
+    assert anonymous.status_code == 403
+    assert demo.status_code == 403
+    assert demo.headers["content-type"].startswith("application/problem+json")
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        make_token("OWNER", secret="wrong-secret-wrong-secret-wrong-secret-0"),
+        make_token("OWNER", exp=1),
+        make_token("OWNER", aud="someone-else"),
+        make_token("ADMIN"),
+        "not-a-jwt",
+    ],
+)
+async def test_invalid_tokens_rejected(api: httpx.AsyncClient, token: str) -> None:
+    response = await api.get("/api/v1/me", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+async def test_me(api: httpx.AsyncClient) -> None:
+    assert (await api.get("/api/v1/me", headers=OWNER)).json() == {
+        "subject": "octocat",
+        "role": "OWNER",
+        "authenticated": True,
+    }
+    assert (await api.get("/api/v1/me")).json()["authenticated"] is False
+
+
+async def test_owner_creates_source_and_polling_starts(api: httpx.AsyncClient, temporal: FakeTemporal) -> None:
+    body = {
+        "kind": "lever",
+        "name": "Globex Lever",
+        "company_name": "Globex",
+        "company_domain": "globex.com",
+        "board_token": "globex",
+    }
+    created = await api.post("/api/v1/sources", json=body, headers=OWNER)
+    assert created.status_code == 201, created.text
+    source = created.json()
+    assert source["company_domain"] == "globex.com"
+    assert temporal.started
+    assert temporal.started[0]["id"] == f"source-polling-{source['id']}"
+
+    duplicate = await api.post("/api/v1/sources", json=body, headers=OWNER)
+    assert duplicate.status_code == 409
+
+    sync = await api.post(f"/api/v1/sources/{source['id']}/sync", headers=OWNER)
+    assert sync.status_code == 202
+    assert temporal.started[-1]["start_signal"] == "poll_now"
+
+    disabled = await api.patch(f"/api/v1/sources/{source['id']}", json={"enabled": False}, headers=OWNER)
+    assert disabled.json()["enabled"] is False
+    assert (await api.post(f"/api/v1/sources/{source['id']}/sync", headers=OWNER)).status_code == 409
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"kind": "rss", "name": "ssrf", "company_name": "x", "company_domain": "x.io", "url": "https://127.0.0.1/feed"},
+        {
+            "kind": "rss",
+            "name": "http",
+            "company_name": "x",
+            "company_domain": "x.io",
+            "url": "http://example.com/feed",
+        },
+        {"kind": "greenhouse", "name": "notoken", "company_name": "x", "company_domain": "x.io"},
+        {
+            "kind": "greenhouse",
+            "name": "inj",
+            "company_name": "x",
+            "company_domain": "x.io",
+            "board_token": "../../etc",
+        },
+        {
+            "kind": "greenhouse",
+            "name": "extra",
+            "company_name": "x",
+            "company_domain": "x.io",
+            "board_token": "a",
+            "admin": True,
+        },
+    ],
+)
+async def test_source_validation(api: httpx.AsyncClient, body: dict[str, Any]) -> None:
+    response = await api.post("/api/v1/sources", json=body, headers=OWNER)
+    assert response.status_code == 422, response.text
+
+
+async def test_profile_update_and_ssrf_webhook(api: httpx.AsyncClient) -> None:
+    profile = (await api.get("/api/v1/profile")).json()
+    assert profile["policy"]["experience"] == {"min": 3.0, "max": 6.0}
+
+    updated = await api.patch(
+        "/api/v1/profile",
+        json={"skills": ["Python", "python", " RAG "], "years_experience": 5, "notify_min_score": 0.6},
+        headers=OWNER,
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["skills"] == ["Python", "python", "RAG"]
+
+    blocked = await api.patch("/api/v1/profile", json={"webhook_url": "https://169.254.169.254/hook"}, headers=OWNER)
+    assert blocked.status_code == 422
+
+
+async def test_job_listing_and_explainable_detail(api: httpx.AsyncClient, ctx: AppContext) -> None:
+    source_id = await create_source(ctx)
+    await discover(ctx, source_id, load_fixture("greenhouse/board.json"))
+
+    listing = await api.get("/api/v1/jobs", params={"q": "FastAPI"})
+    assert listing.status_code == 200
+    page = listing.json()
+    assert page["total"] == 1
+    job_id = page["items"][0]["id"]
+
+    detail = (await api.get(f"/api/v1/jobs/{job_id}")).json()
+    assert detail["snapshot"]["content_type"] == "application/json"
+    assert detail["versions"][0]["version"] == 1
+    assert "<script>" not in detail["description_html"]
+
+    snapshot = await api.get(f"/api/v1/jobs/{job_id}/snapshot")
+    assert "4012345" in snapshot.json()["content"]
+
+    application = await api.post(f"/api/v1/jobs/{job_id}/applications", json={"status": "applied"}, headers=OWNER)
+    assert application.status_code == 201
+    apps = (await api.get("/api/v1/applications")).json()
+    assert apps["items"][0]["status"] == "applied"
+
+    rerun = await api.post(f"/api/v1/jobs/{job_id}/evaluate", headers=OWNER)
+    assert rerun.status_code == 202
+
+    dashboard = (await api.get("/api/v1/dashboard")).json()
+    assert dashboard["sources_total"] == 1
+
+
+async def test_validation_and_not_found(api: httpx.AsyncClient) -> None:
+    assert (await api.get("/api/v1/jobs/00000000-0000-0000-0000-000000000000")).status_code == 404
+    assert (await api.get("/api/v1/jobs", params={"limit": 1000})).status_code == 422
+    bad = await api.get("/api/v1/jobs/not-a-uuid")
+    assert bad.status_code == 422
+    assert bad.json()["errors"]
+
+
+async def test_body_size_limit(api: httpx.AsyncClient) -> None:
+    response = await api.patch(
+        "/api/v1/profile", content=b"x" * (300 * 1024), headers={**OWNER, "content-type": "application/json"}
+    )
+    assert response.status_code == 413

@@ -1,0 +1,25 @@
+# Demo seed: `make seed`. Board tokens below are public job-board APIs.
+profile:
+  display_name: Demo Owner
+  target_roles: [Senior AI Engineer, Machine Learning Engineer, Backend Engineer]
+  skills: [Python, FastAPI, PostgreSQL, LLM, RAG, Agentic AI, Docker, Temporal, TypeScript]
+  years_experience: 5
+  seniority: senior
+  timezone: IST
+  summary: >
+    Backend / AI engineer building production LLM systems: retrieval-augmented generation,
+    agentic workflows, durable orchestration and PostgreSQL-centric data platforms.
+  policy:
+    allowed_locations: [India, Worldwide]
+    allowed_work_models: [remote]
+    allowed_timezones: [IST, GMT, BST, CET, EET]
+    experience: {min: 3, max: 6}
+    excluded_regions: [US-only, Canada-only]
+
+sources:
+  - name: Anthropic (Greenhouse)
+    definition: {kind: greenhouse, company_name: Anthropic, company_domain: anthropic.com, board_token: anthropic}
+  - name: Vercel (Greenhouse)
+    definition: {kind: greenhouse, company_name: Vercel, company_domain: vercel.com, board_token: vercel}
+  - name: Ashby (Ashby)
+    definition: {kind: ashby, company_name: Ashby, company_domain: ashbyhq.com, board_token: ashby}
