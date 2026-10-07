@@ -1,20 +1,24 @@
 """Authentication & authorization.
 
-The Next.js app (Auth.js + GitHub OAuth) mints a short-lived Ed25519-signed (EdDSA)
-JWT for each backend call, server-side only. The API holds only public keys, so it can
-verify but never forge tokens. It checks signature (by ``kid``), algorithm, issuer,
-audience, expiry, not-before and token id, then **derives the role itself** from its own
-``OWNER_GITHUB_IDS`` allowlist using the immutable numeric GitHub user id in ``sub``.
-Any role claim sent by the web app is ignored: authorization is decided server-side.
+The Next.js app (Auth.js) mints a short-lived Ed25519-signed (EdDSA) JWT for each backend
+call, server-side only. The API holds only public keys, so it can verify but never forge
+tokens. It checks signature (by ``kid``), algorithm, issuer, audience, expiry, not-before
+and token id.
 
-Anonymous callers are PUBLIC_DEMO (read-only) when ``PUBLIC_DEMO_ENABLED`` is true.
+The token says only *who* the caller is (``sub`` = ``<provider>:<immutable subject>``) and,
+optionally, which workspace they selected (``wid``). *What* they may do is decided by the
+API from its own database: workspace roles come from memberships (see jobpulse.api.tenancy),
+and the ``OWNER_GITHUB_IDS`` allowlist marks platform admins. Role claims are ignored.
+
+Anonymous callers (and signed anonymous visitors) are read-only viewers of the public demo
+workspace when ``PUBLIC_DEMO_ENABLED`` is true.
 """
 
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Annotated
 
 import jwt
@@ -22,30 +26,35 @@ from fastapi import Depends, Request
 
 from jobpulse.api.deps import Ctx
 from jobpulse.core.config import Settings
-from jobpulse.core.errors import AuthenticationError, PermissionDeniedError
+from jobpulse.core.errors import AuthenticationError
 from jobpulse.core.jwks import JWT_ALGORITHM, load_jwks
 
 JWT_LEEWAY_SECONDS = 30
 MAX_TOKEN_LENGTH = 4096
 MAX_TOKEN_LIFETIME_SECONDS = 15 * 60
-SUBJECT_RE = re.compile(r"^github:(?P<id>[1-9][0-9]{0,19})$")
+# Immutable provider subjects only (never logins or emails, which can change hands):
+# GitHub numeric ids, OIDC "sub" values, and SHA-256 hashes of verified email addresses.
+SUBJECT_PATTERNS = {
+    "github": re.compile(r"^[1-9][0-9]{0,19}$"),
+    "google": re.compile(r"^[A-Za-z0-9_-]{1,255}$"),
+    "microsoft": re.compile(r"^[A-Za-z0-9_-]{1,255}$"),
+    "email": re.compile(r"^[0-9a-f]{64}$"),
+}
 # Anonymous visitors: keyed hash of their IP, signed by the web tier. Read-only, but each
 # visitor gets their own rate-limit bucket instead of sharing the web server's IP.
 VISITOR_RE = re.compile(r"^visitor:[0-9a-f]{32}$")
 LOGIN_RE = re.compile(r"^[A-Za-z0-9-]{1,39}$")
 
 
-class Role(StrEnum):
-    PUBLIC_DEMO = "PUBLIC_DEMO"
-    OWNER = "OWNER"
-
-
 @dataclass(frozen=True, slots=True)
 class Principal:
     subject: str
-    role: Role
     authenticated: bool
     login: str | None = None
+    provider: str | None = None
+    provider_subject: str | None = None
+    platform_admin: bool = False
+    workspace_hint: uuid.UUID | None = None
 
     @property
     def actor(self) -> str:
@@ -54,7 +63,7 @@ class Principal:
         return f"{self.subject} ({self.login})" if self.login else self.subject
 
 
-ANONYMOUS = Principal(subject="anonymous", role=Role.PUBLIC_DEMO, authenticated=False)
+ANONYMOUS = Principal(subject="anonymous", authenticated=False)
 
 
 def decode_token(token: str, settings: Settings) -> Principal:
@@ -90,15 +99,32 @@ def decode_token(token: str, settings: Settings) -> Principal:
         raise AuthenticationError("token lifetime too long")
     subject = str(claims["sub"])
     if VISITOR_RE.fullmatch(subject):
-        return Principal(subject=subject, role=Role.PUBLIC_DEMO, authenticated=False)
-    match = SUBJECT_RE.fullmatch(subject)
-    if match is None:
+        return Principal(subject=subject, authenticated=False)
+    provider, _, provider_subject = subject.partition(":")
+    pattern = SUBJECT_PATTERNS.get(provider)
+    if pattern is None or not pattern.fullmatch(provider_subject):
         raise AuthenticationError("invalid subject")
-    github_id = int(match.group("id"))
     login = claims.get("login")
     login = login if isinstance(login, str) and LOGIN_RE.fullmatch(login) else None
-    role = Role.OWNER if github_id in settings.owner_github_ids else Role.PUBLIC_DEMO
-    return Principal(subject=str(claims["sub"]), role=role, authenticated=True, login=login)
+    return Principal(
+        subject=subject,
+        authenticated=True,
+        login=login,
+        provider=provider,
+        provider_subject=provider_subject,
+        platform_admin=provider == "github" and int(provider_subject) in settings.owner_github_ids,
+        workspace_hint=_workspace_claim(claims.get("wid")),
+    )
+
+
+def _workspace_claim(value: object) -> uuid.UUID | None:
+    """The selected workspace is only a hint: membership is verified against the database."""
+    if value is None:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except ValueError as exc:
+        raise AuthenticationError("invalid workspace claim") from exc
 
 
 async def current_principal(request: Request, ctx: Ctx) -> Principal:
@@ -119,11 +145,4 @@ async def current_principal(request: Request, ctx: Ctx) -> Principal:
     return principal
 
 
-async def require_owner(principal: Annotated[Principal, Depends(current_principal)]) -> Principal:
-    if principal.role is not Role.OWNER:
-        raise PermissionDeniedError("owner role required")
-    return principal
-
-
 Reader = Annotated[Principal, Depends(current_principal)]
-Owner = Annotated[Principal, Depends(require_owner)]

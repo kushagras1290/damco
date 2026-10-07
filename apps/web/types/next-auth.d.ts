@@ -1,13 +1,10 @@
 import type { DefaultSession } from "next-auth";
 
-import type { Role } from "@/lib/roles";
-
 declare module "next-auth" {
   interface Session {
     user: {
       githubId?: string;
       login?: string;
-      role: Role;
     } & DefaultSession["user"];
   }
   interface Profile {
@@ -21,6 +18,5 @@ declare module "@auth/core/jwt" {
   interface JWT {
     githubId?: string;
     login?: string;
-    role?: Role;
   }
 }

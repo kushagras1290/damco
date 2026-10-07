@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { auth, signIn, signOut } from "@/auth";
 import { LiveStatusBadge } from "@/components/live-events";
 import { NavLinks } from "@/components/nav-links";
+import { WorkspaceSwitcher } from "@/components/workspace-switcher";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/primitives";
 import { githubConfigured } from "@/lib/server-env";
@@ -36,10 +37,8 @@ export async function AppShell({ children }: { children: ReactNode }) {
           <div className="flex items-center gap-2 md:mt-2 md:flex-col md:items-stretch">
             {user ? (
               <>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="truncate">{user.login ?? user.name}</span>
-                  <Badge tone={user.role === "OWNER" ? "info" : "neutral"}>{user.role === "OWNER" ? "Owner" : "Demo"}</Badge>
-                </div>
+                <span className="truncate text-xs text-muted-foreground">Signed in as {user.login ?? user.name}</span>
+                <WorkspaceSwitcher />
                 <form action={logout}>
                   <Button variant="ghost" size="sm" className="w-full justify-start" type="submit">
                     <LogOut aria-hidden /> Sign out
@@ -55,6 +54,7 @@ export async function AppShell({ children }: { children: ReactNode }) {
             ) : (
               <Badge>Public demo (read-only)</Badge>
             )}
+            {user ? null : <WorkspaceSwitcher />}
           </div>
         </div>
         <div className="px-2 pb-2 md:pb-4">

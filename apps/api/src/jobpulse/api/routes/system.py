@@ -17,7 +17,7 @@ from temporalio.service import RPCError
 from jobpulse.api.deps import Ctx
 from jobpulse.api.mappers import job_summary
 from jobpulse.api.schemas import DashboardStats, DependencyStatus, SystemStatus
-from jobpulse.api.tenancy import ActiveProfile, Session, WorkspaceId
+from jobpulse.api.tenancy import ActiveProfile, Session, Viewer, WorkspaceId
 from jobpulse.core.cache import ResponseCache
 from jobpulse.core.errors import ServiceUnavailableError
 from jobpulse.core.security import Reader
@@ -60,7 +60,7 @@ async def metrics(ctx: Ctx) -> Response:
 
 @router.get("/api/v1/dashboard", response_model=DashboardStats)
 async def dashboard(
-    request: Request, _: Reader, session: Session, workspace_id: WorkspaceId, profile: ActiveProfile
+    request: Request, _: Viewer, session: Session, workspace_id: WorkspaceId, profile: ActiveProfile
 ) -> DashboardStats:
     """Workspace aggregates, served from the short-TTL cache when warm (keyed per workspace and
     profile - a shared key would leak one tenant's dashboard to another)."""

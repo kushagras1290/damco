@@ -251,10 +251,51 @@ export interface SystemStatus {
   dependencies: { name: string; ok: boolean; detail: string }[];
 }
 
+export type WorkspaceRole = "viewer" | "member" | "admin" | "owner";
+export type InvitableRole = Exclude<WorkspaceRole, "viewer">;
+
+export interface WorkspaceInfo {
+  id: string;
+  name: string;
+  slug: string;
+  plan: string;
+  personal: boolean;
+  role: WorkspaceRole;
+}
+
 export interface Me {
   subject: string;
-  role: "PUBLIC_DEMO" | "OWNER";
+  login: string | null;
   authenticated: boolean;
+  user_id: string | null;
+  display_name: string;
+  platform_admin: boolean;
+  role: WorkspaceRole | null;
+  workspace: WorkspaceInfo | null;
+  workspaces: WorkspaceInfo[];
+}
+
+export interface Member {
+  user_id: string;
+  display_name: string;
+  role: InvitableRole;
+  joined_at: string;
+  you: boolean;
+}
+
+export interface Invitation {
+  id: string;
+  email: string | null;
+  role: InvitableRole;
+  expires_at: string;
+  created_at: string;
+}
+
+export interface InvitationIssued {
+  id: string;
+  role: InvitableRole;
+  expires_at: string;
+  invite_url: string;
 }
 
 export interface ActionAccepted {

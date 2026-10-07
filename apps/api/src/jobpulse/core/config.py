@@ -84,6 +84,9 @@ class Settings(BaseSettings):
     api_jwt_audience: str = "jobpulse-api"
     api_jwt_issuer: str = "jobpulse-web"
     public_demo_enabled: bool = True
+    # open: anyone can sign up and gets a personal workspace; invite: accounts are created but
+    # join workspaces only through invitations; closed: only platform admins can sign in.
+    signup_policy: Literal["open", "invite", "closed"] = "open"
     # Immutable numeric GitHub user IDs granted OWNER. Logins are mutable and can be
     # re-registered after a rename, so they are never used for authorization.
     owner_github_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)

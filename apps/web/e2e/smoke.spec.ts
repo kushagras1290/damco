@@ -78,3 +78,17 @@ test("API responses expose rate-limit headers through the proxy", async ({ page 
   expect(Number(response.headers()["ratelimit-limit"])).toBeGreaterThan(0);
   expect(response.headers()["ratelimit-remaining"]).toBeDefined();
 });
+
+test("anonymous visitors see the read-only demo workspace", async ({ page }) => {
+  await page.goto("/dashboard");
+  await expect(page.getByTestId("workspace-switcher").getByText("Read-only demo")).toBeVisible();
+  await page.goto("/workspace");
+  await expect(page.getByText("You are browsing the public demo")).toBeVisible();
+  const me = await (await page.request.get("/api/backend/me")).json();
+  expect(me.role).toBe("viewer");
+});
+
+test("malformed invitation links are rejected", async ({ page }) => {
+  const response = await page.goto("/invite/not-a-valid-token!");
+  expect(response?.status()).toBe(404);
+});

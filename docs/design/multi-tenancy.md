@@ -115,8 +115,8 @@ simply one workspace.
 - PII is limited to member emails/names and profile content; no candidate data in Redis or logs.
 
 ## Delivery plan (each step shippable, tests first)
-1. Workspaces, memberships, `workspace_id` + RLS, Default-workspace migration, isolation tests.
-2. Workspace-aware auth (`wid` claim, roles), invitations, workspace switcher.
+1. ✅ Workspaces, memberships, `workspace_id` + RLS, Default-workspace migration, isolation tests.
+2. ✅ Workspace-aware auth (`wid` claim, roles), invitations, workspace switcher, `SIGNUP_POLICY`.
 3. Source deduplication + subscriptions; per-profile evaluation fan-out.
 4. Workspace-scoped realtime, cache, rate limits and quotas.
 5. Plans and limits, then Razorpay subscriptions (checkout, webhooks, grace period); Stripe after.

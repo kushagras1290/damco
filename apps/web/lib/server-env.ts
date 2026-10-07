@@ -4,17 +4,6 @@ import { z } from "zod";
 
 const MIN_SECRET_LENGTH = 32;
 
-const csvIds = z
-  .string()
-  .default("")
-  .transform((value) =>
-    value
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean),
-  )
-  .pipe(z.array(z.string().regex(/^[1-9][0-9]{0,19}$/, "OWNER_GITHUB_IDS must be numeric GitHub user ids")));
-
 const privateJwk = z
   .string()
   .transform((raw, ctx) => {
@@ -42,7 +31,6 @@ export const serverEnvSchema = z
     API_JWT_PRIVATE_JWK: privateJwk,
     API_JWT_AUDIENCE: z.string().default("jobpulse-api"),
     API_JWT_ISSUER: z.string().default("jobpulse-web"),
-    OWNER_GITHUB_IDS: csvIds,
     AUTH_SECRET: z.string().min(MIN_SECRET_LENGTH, `AUTH_SECRET must be at least ${MIN_SECRET_LENGTH} characters`),
     AUTH_URL: z.url().optional(),
     AUTH_GITHUB_ID: z.string().optional(),
@@ -59,6 +47,7 @@ export const serverEnvSchema = z
     }
     if (env.ENVIRONMENT !== "production") return;
     // Production: no implicit host trust, HTTPS everywhere, sign-in must be possible.
+    // (Owner/platform-admin ids live only in the API, which is authoritative for roles.)
     if (!env.AUTH_URL?.startsWith("https://")) {
       ctx.addIssue({ code: "custom", path: ["AUTH_URL"], message: "AUTH_URL must be an https:// URL in production" });
     }
@@ -67,9 +56,6 @@ export const serverEnvSchema = z
     }
     if (!env.AUTH_GITHUB_ID) {
       ctx.addIssue({ code: "custom", path: ["AUTH_GITHUB_ID"], message: "GitHub OAuth is required in production" });
-    }
-    if (env.OWNER_GITHUB_IDS.length === 0) {
-      ctx.addIssue({ code: "custom", path: ["OWNER_GITHUB_IDS"], message: "at least one owner id is required in production" });
     }
   });
 

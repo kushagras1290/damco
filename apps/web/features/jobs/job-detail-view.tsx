@@ -8,7 +8,7 @@ import { EligibilityBadge, ErrorState, LoadingRows, PageHeader, ScorePill } from
 import { RuleList, ScoreBreakdown } from "@/components/explain";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, Select } from "@/components/ui/primitives";
-import { useIsOwner, useJob, useRerunJob, useSnapshot, useTrackApplication } from "@/lib/api/hooks";
+import { useCan, useJob, useRerunJob, useSnapshot, useTrackApplication } from "@/lib/api/hooks";
 import type { ApplicationStatus, JobDetail } from "@/lib/api/types";
 import { humanize, timeAgo } from "@/lib/utils";
 
@@ -120,7 +120,7 @@ function OwnerActions({ job }: { job: JobDetail }) {
 
 export function JobDetailView({ id }: { id: string }) {
   const { data: job, error, isPending } = useJob(id);
-  const isOwner = useIsOwner();
+  const canEdit = useCan("member");
 
   if (isPending) return <LoadingRows rows={10} />;
   if (error) return <ErrorState error={error} />;
@@ -133,7 +133,7 @@ export function JobDetailView({ id }: { id: string }) {
         description={`${job.company} · ${job.location ?? "Location n/a"} · ${job.source_name}`}
         actions={
           <>
-            {isOwner ? <OwnerActions job={job} /> : null}
+            {canEdit ? <OwnerActions job={job} /> : null}
             <Button asChild>
               <a href={job.url} target="_blank" rel="noopener noreferrer nofollow">
                 <ExternalLink aria-hidden /> View posting

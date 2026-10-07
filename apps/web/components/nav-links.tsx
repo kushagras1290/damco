@@ -10,6 +10,7 @@ import {
   Scale,
   Server,
   UserRound,
+  Users,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -24,6 +25,7 @@ const LINKS: { href: string; label: string; icon: LucideIcon }[] = [
   { href: "/decisions", label: "Decisions", icon: Scale },
   { href: "/runs", label: "Runs", icon: Activity },
   { href: "/profile", label: "Profile", icon: UserRound },
+  { href: "/workspace", label: "Workspace", icon: Users },
   { href: "/system", label: "System", icon: Server },
 ];
 

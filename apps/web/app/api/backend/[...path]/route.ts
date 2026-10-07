@@ -4,6 +4,7 @@ import { auth } from "@/auth";
 import {
   ALLOWED_METHODS,
   EVENTS_PATH,
+  WORKSPACE_COOKIE,
   MAX_BODY_BYTES,
   backendPath,
   clientIp,
@@ -12,6 +13,7 @@ import {
   isSameOrigin,
   mintBackendToken,
   passthroughResponseHeaders,
+  selectedWorkspace,
   visitorSubject,
 } from "@/lib/backend-proxy";
 import { log } from "@/lib/log";
@@ -95,6 +97,7 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
     const token = await mintBackendToken({
       subject: caller.subject,
       login: caller.login,
+      workspaceId: selectedWorkspace(request.cookies.get(WORKSPACE_COOKIE)?.value),
       privateJwk: env.API_JWT_PRIVATE_JWK,
       audience: env.API_JWT_AUDIENCE,
       issuer: env.API_JWT_ISSUER,
@@ -110,7 +113,8 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
   if (request.method !== "GET") {
     body = await request.text();
     if (new TextEncoder().encode(body).byteLength > MAX_BODY_BYTES) return problem(413, "request body too large");
-    headers.set("content-type", "application/json");
+    if (body) headers.set("content-type", "application/json");
+    else body = undefined; // e.g. DELETE without a body
   }
 
   try {
@@ -122,7 +126,7 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
       redirect: "error",
       signal: AbortSignal.timeout(env.BACKEND_TIMEOUT_MS),
     });
-    const payload = await upstream.text();
+    const payload = upstream.status === 204 ? null : await upstream.text();
     return new NextResponse(payload, { status: upstream.status, headers: passthroughResponseHeaders(upstream.headers) });
   } catch (error) {
     const timedOut = error instanceof DOMException && error.name === "TimeoutError";
@@ -134,3 +138,4 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
 export const GET = proxy;
 export const POST = proxy;
 export const PATCH = proxy;
+export const DELETE = proxy;

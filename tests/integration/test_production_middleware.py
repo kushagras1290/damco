@@ -98,7 +98,7 @@ async def test_visitor_tokens_get_their_own_read_only_bucket(redis_settings: Set
         bob_first = await client.get("/api/v1/me", headers=bob)
         write = await client.post("/api/v1/sources", json=SOURCE_BODY, headers=bob)
     assert me.status_code == 200
-    assert me.json()["role"] == "PUBLIC_DEMO"
+    assert me.json()["role"] == "viewer"
     assert alice_again.status_code == 429
     assert bob_first.status_code == 200  # visitors behind one web server do not share a bucket
     assert write.status_code in {403, 429}  # read-only either way
@@ -139,7 +139,8 @@ async def test_idempotency_keys_are_scoped_per_caller(redis_settings: Settings, 
         theirs = await client.patch("/api/v1/profile", json={"display_name": "Mine"}, headers={**other_owner, **key})
     assert mine.status_code == 200
     assert "idempotent-replayed" not in theirs.headers  # never served another caller's response
-    assert theirs.status_code == 403  # not an owner: executed (and rejected) on its own
+    assert theirs.status_code == 200  # executed on its own, in the other user's own workspace
+    assert theirs.json()["id"] != mine.json()["id"]  # a different profile in a different workspace
 
 
 async def test_idempotency_rejects_bad_keys_and_requires_redis(settings: Settings, ctx: AppContext) -> None:

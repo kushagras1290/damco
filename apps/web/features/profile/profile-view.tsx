@@ -7,7 +7,7 @@ import { useForm } from "react-hook-form";
 import { ErrorState, LoadingRows, PageHeader } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, Input, Label, Select, Textarea } from "@/components/ui/primitives";
-import { useIsOwner, useProfile, useUpdateProfile } from "@/lib/api/hooks";
+import { useCan, useProfile, useUpdateProfile } from "@/lib/api/hooks";
 import type { Profile } from "@/lib/api/types";
 import { type ProfileFormInput, type ProfileFormValues, profileFormSchema } from "@/lib/schemas";
 
@@ -56,7 +56,7 @@ function Field({ id, label, error, children }: { id: string; label: string; erro
 
 export function ProfileView() {
   const { data: profile, error, isPending } = useProfile();
-  const isOwner = useIsOwner();
+  const canEdit = useCan("member");
   const update = useUpdateProfile();
   const form = useForm<ProfileFormInput, unknown, ProfileFormValues>({ resolver: zodResolver(profileFormSchema) });
   const errors = form.formState.errors;
@@ -78,7 +78,7 @@ export function ProfileView() {
         actions={profile.has_embedding ? <Badge tone="success">profile embedded</Badge> : <Badge>no embedding yet</Badge>}
       />
       <form onSubmit={submit} noValidate>
-        <fieldset disabled={!isOwner || update.isPending} className="grid gap-4 lg:grid-cols-2">
+        <fieldset disabled={!canEdit || update.isPending} className="grid gap-4 lg:grid-cols-2">
           <Card>
             <CardHeader>
               <CardTitle>Candidate</CardTitle>
@@ -189,7 +189,7 @@ export function ProfileView() {
           </div>
         ) : null}
         <div className="mt-4 flex items-center gap-3">
-          {isOwner ? (
+          {canEdit ? (
             <Button type="submit" disabled={update.isPending}>
               {update.isPending ? "Saving…" : "Save profile"}
             </Button>

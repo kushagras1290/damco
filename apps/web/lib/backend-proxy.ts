@@ -1,5 +1,7 @@
 import { type CryptoKey, type JWK, SignJWT, importJWK } from "jose";
 
+import { isWorkspaceId } from "@/lib/workspace-cookie";
+
 export const ALLOWED_ROOTS = new Set([
   "jobs",
   "sources",
@@ -11,8 +13,12 @@ export const ALLOWED_ROOTS = new Set([
   "system",
   "me",
   "events",
+  "workspaces",
+  "workspace",
+  "invitations",
 ]);
-export const ALLOWED_METHODS = new Set(["GET", "POST", "PATCH"]);
+export const ALLOWED_METHODS = new Set(["GET", "POST", "PATCH", "DELETE"]);
+export { WORKSPACE_COOKIE } from "@/lib/workspace-cookie";
 export const MAX_BODY_BYTES = 256 * 1024;
 export const EVENTS_PATH = "/api/v1/events";
 const SEGMENT_RE = /^[A-Za-z0-9_-]{1,100}$/;
@@ -106,6 +112,11 @@ export async function visitorSubject(ip: string, secret: string): Promise<string
   return `visitor:${hex.slice(0, VISITOR_HASH_HEX_CHARS)}`;
 }
 
+/** Selected workspace (a hint only: the API verifies membership on every request). */
+export function selectedWorkspace(cookieValue: string | undefined): string | undefined {
+  return isWorkspaceId(cookieValue) ? cookieValue.toLowerCase() : undefined;
+}
+
 export interface PrivateSigningJwk extends JWK {
   kid: string;
 }
@@ -113,10 +124,12 @@ export interface PrivateSigningJwk extends JWK {
 const keyCache = new Map<string, Promise<CryptoKey | Uint8Array>>();
 
 function signingKey(jwk: PrivateSigningJwk): Promise<CryptoKey | Uint8Array> {
-  let key = keyCache.get(jwk.kid);
+  // Keyed by kid AND public key: a rotated key that reuses a kid is never signed with stale material.
+  const cacheKey = `${jwk.kid}:${String(jwk.x)}`;
+  let key = keyCache.get(cacheKey);
   if (!key) {
     key = importJWK(jwk, ALGORITHM);
-    keyCache.set(jwk.kid, key);
+    keyCache.set(cacheKey, key);
   }
   return key;
 }
@@ -125,6 +138,8 @@ export interface TokenClaims {
   /** `github:<numeric id>` for signed-in users, `visitor:<hash>` for anonymous visitors. */
   subject: string;
   login: string | undefined;
+  /** Selected workspace id, forwarded as the `wid` claim. */
+  workspaceId?: string | undefined;
   privateJwk: PrivateSigningJwk;
   audience: string;
   issuer: string;
@@ -139,7 +154,9 @@ export function githubSubject(githubId: string): string {
  * has NO role claim - the API derives authorization from `sub` itself.
  */
 export async function mintBackendToken(claims: TokenClaims): Promise<string> {
-  const payload = claims.login ? { login: claims.login } : {};
+  const payload: Record<string, string> = {};
+  if (claims.login) payload.login = claims.login;
+  if (claims.workspaceId) payload.wid = claims.workspaceId;
   return new SignJWT(payload)
     .setProtectedHeader({ alg: ALGORITHM, typ: "JWT", kid: claims.privateJwk.kid })
     .setSubject(claims.subject)

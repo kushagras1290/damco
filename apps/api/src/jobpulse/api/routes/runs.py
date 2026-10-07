@@ -9,9 +9,8 @@ from fastapi import APIRouter
 
 from jobpulse.api.deps import Paging
 from jobpulse.api.schemas import Page, RunOut
-from jobpulse.api.tenancy import Session
+from jobpulse.api.tenancy import Session, Viewer
 from jobpulse.core.errors import NotFoundError
-from jobpulse.core.security import Reader
 from jobpulse.repositories.activity import WorkflowRunRepository
 
 router = APIRouter(prefix="/api/v1/runs", tags=["runs"])
@@ -22,7 +21,7 @@ RunStatus = Literal["running", "completed", "failed", "cancelled"]
 
 @router.get("", response_model=Page[RunOut])
 async def list_runs(
-    _: Reader,
+    _: Viewer,
     session: Session,
     paging: Paging,
     workflow_type: WorkflowType | None = None,
@@ -40,7 +39,7 @@ async def list_runs(
 
 
 @router.get("/{run_id}", response_model=RunOut)
-async def get_run(run_id: uuid.UUID, _: Reader, session: Session) -> RunOut:
+async def get_run(run_id: uuid.UUID, _: Viewer, session: Session) -> RunOut:
     run = await WorkflowRunRepository(session).get(run_id)
     if run is None:
         raise NotFoundError("run not found")

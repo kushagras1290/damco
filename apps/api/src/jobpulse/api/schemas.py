@@ -364,8 +364,80 @@ class SystemStatus(BaseModel):
     dependencies: list[DependencyStatus]
 
 
+WorkspaceRoleName = Literal["viewer", "member", "admin", "owner"]
+InvitableRole = Literal["member", "admin", "owner"]
+
+
+class WorkspaceOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    slug: str
+    plan: str
+    personal: bool
+    role: WorkspaceRoleName
+
+
 class Me(BaseModel):
     subject: str
     login: str | None
-    role: str
     authenticated: bool
+    user_id: uuid.UUID | None
+    display_name: str
+    platform_admin: bool
+    role: WorkspaceRoleName | None
+    workspace: WorkspaceOut | None
+    workspaces: list[WorkspaceOut]
+
+
+class WorkspaceCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: ShortText
+
+
+class WorkspacePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: ShortText
+
+
+class MemberOut(BaseModel):
+    user_id: uuid.UUID
+    display_name: str
+    role: InvitableRole
+    joined_at: datetime
+    you: bool
+
+
+class MemberPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: InvitableRole
+
+
+class InvitationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: EmailStr | None = None
+    role: InvitableRole = "member"
+
+
+class InvitationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    email: str | None
+    role: InvitableRole
+    expires_at: datetime
+    created_at: datetime
+
+
+class InvitationIssued(BaseModel):
+    id: uuid.UUID
+    role: InvitableRole
+    expires_at: datetime
+    invite_url: str  # contains the secret token: shown once, never retrievable again
+
+
+class InvitationAccept(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: Annotated[str, Field(min_length=20, max_length=200, pattern=r"^[A-Za-z0-9_-]+$")]
+
+
+class InvitationAccepted(BaseModel):
+    workspace_id: uuid.UUID

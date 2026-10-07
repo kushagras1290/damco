@@ -13,10 +13,9 @@ from temporalio.client import Client
 from jobpulse.api.deps import Ctx, Paging, Temporal
 from jobpulse.api.mappers import source_out
 from jobpulse.api.schemas import ActionAccepted, Page, SourceCreate, SourceOut, SourcePatch
-from jobpulse.api.tenancy import Session
+from jobpulse.api.tenancy import Admin, Session, Viewer
 from jobpulse.core.config import Settings
 from jobpulse.core.errors import ConflictError, NotFoundError
-from jobpulse.core.security import Owner, Reader
 from jobpulse.repositories.activity import AuditRepository
 from jobpulse.repositories.sources import SourceRepository
 from jobpulse.repositories.tenancy import SubscriptionRepository
@@ -71,7 +70,7 @@ async def _validate_definition(body: SourceCreate, ctx: Ctx) -> SourceDefinition
 
 
 @router.get("", response_model=Page[SourceOut])
-async def list_sources(_: Reader, session: Session, paging: Paging) -> Page[SourceOut]:
+async def list_sources(_: Viewer, session: Session, paging: Paging) -> Page[SourceOut]:
     repo = SourceRepository(session)
     subscriptions = SubscriptionRepository(session)
     rows = await subscriptions.subscribed_sources(limit=paging.limit, offset=paging.offset)
@@ -85,7 +84,7 @@ async def list_sources(_: Reader, session: Session, paging: Paging) -> Page[Sour
 
 
 @router.get("/{source_id}", response_model=SourceOut)
-async def get_source(source_id: uuid.UUID, _: Reader, session: Session) -> SourceOut:
+async def get_source(source_id: uuid.UUID, _: Viewer, session: Session) -> SourceOut:
     repo = SourceRepository(session)
     source = await repo.get(source_id)
     if source is None:
@@ -97,7 +96,7 @@ async def get_source(source_id: uuid.UUID, _: Reader, session: Session) -> Sourc
 @router.post("", response_model=SourceOut, status_code=status.HTTP_201_CREATED)
 async def create_source(
     body: SourceCreate,
-    principal: Owner,
+    account: Admin,
     session: Session,
     ctx: Ctx,
     client: Temporal,
@@ -121,7 +120,7 @@ async def create_source(
     except IntegrityError as exc:
         raise ConflictError("source conflicts with an existing source") from exc
     await AuditRepository(session).record(
-        actor=principal.actor,
+        actor=account.principal.actor,
         action="source.create",
         entity_type="source",
         entity_id=str(source.id),
@@ -136,7 +135,7 @@ async def create_source(
 async def update_source(
     source_id: uuid.UUID,
     body: SourcePatch,
-    principal: Owner,
+    account: Admin,
     session: Session,
     ctx: Ctx,
     client: Temporal,
@@ -160,7 +159,7 @@ async def update_source(
         source.circuit_open_until = None
     await session.flush()
     await AuditRepository(session).record(
-        actor=principal.actor,
+        actor=account.principal.actor,
         action="source.update",
         entity_type="source",
         entity_id=str(source_id),
@@ -175,7 +174,7 @@ async def update_source(
 @router.post("/{source_id}/sync", response_model=ActionAccepted, status_code=status.HTTP_202_ACCEPTED)
 async def sync_source(
     source_id: uuid.UUID,
-    principal: Owner,
+    account: Admin,
     session: Session,
     ctx: Ctx,
     client: Temporal,
@@ -187,7 +186,7 @@ async def sync_source(
         raise ConflictError("source is disabled")
     workflow_id = await temporal_service.trigger_sync(client, ctx.settings, str(source_id))
     await AuditRepository(session).record(
-        actor=principal.actor,
+        actor=account.principal.actor,
         action="source.sync",
         entity_type="source",
         entity_id=str(source_id),

@@ -26,9 +26,8 @@ from jobpulse.api.schemas import (
     SnapshotOut,
     VersionOut,
 )
-from jobpulse.api.tenancy import ActiveProfile, Session
+from jobpulse.api.tenancy import ActiveProfile, Member, Session, Viewer
 from jobpulse.core.errors import NotFoundError
-from jobpulse.core.security import Owner, Reader
 from jobpulse.repositories.activity import ApplicationRepository, AuditRepository
 from jobpulse.repositories.decisions import DecisionRepository
 from jobpulse.repositories.jobs import JobFilters, JobRepository, JobView, SortKey
@@ -44,7 +43,7 @@ RemoteFilter = Literal["remote", "hybrid", "onsite", "unknown"]
 
 @router.get("", response_model=Page[JobSummary])
 async def list_jobs(
-    _: Reader,
+    _: Viewer,
     session: Session,
     profile: ActiveProfile,
     paging: Paging,
@@ -74,7 +73,7 @@ async def list_jobs(
 
 
 @router.get("/{job_id}", response_model=JobDetail)
-async def get_job(job_id: uuid.UUID, _: Reader, session: Session, profile: ActiveProfile) -> JobDetail:
+async def get_job(job_id: uuid.UUID, _: Viewer, session: Session, profile: ActiveProfile) -> JobDetail:
     jobs = JobRepository(session)
     job = await jobs.get_detail(job_id)
     if job is None:
@@ -120,7 +119,7 @@ async def get_job(job_id: uuid.UUID, _: Reader, session: Session, profile: Activ
 
 
 @router.get("/{job_id}/snapshot", response_model=SnapshotContent)
-async def get_snapshot(job_id: uuid.UUID, _: Reader, session: Session, ctx: Ctx) -> SnapshotContent:
+async def get_snapshot(job_id: uuid.UUID, _: Viewer, session: Session, ctx: Ctx) -> SnapshotContent:
     snapshot = await JobRepository(session).latest_snapshot(job_id)
     if snapshot is None:
         raise NotFoundError("no snapshot for job")
@@ -136,7 +135,7 @@ async def get_snapshot(job_id: uuid.UUID, _: Reader, session: Session, ctx: Ctx)
 @router.post("/{job_id}/evaluate", response_model=ActionAccepted, status_code=status.HTTP_202_ACCEPTED)
 async def rerun_job(
     job_id: uuid.UUID,
-    principal: Owner,
+    account: Member,
     session: Session,
     profile: ActiveProfile,
     ctx: Ctx,
@@ -151,7 +150,7 @@ async def rerun_job(
         nonce=secrets.token_hex(6),
     )
     await AuditRepository(session).record(
-        actor=principal.actor,
+        actor=account.principal.actor,
         action="job.rerun",
         entity_type="job",
         entity_id=str(job_id),
@@ -164,7 +163,7 @@ async def rerun_job(
 async def create_application(
     job_id: uuid.UUID,
     body: ApplicationCreate,
-    principal: Owner,
+    account: Member,
     session: Session,
     profile: ActiveProfile,
 ) -> ApplicationOut:
@@ -178,7 +177,7 @@ async def create_application(
         applied_at=body.applied_at,
     )
     await AuditRepository(session).record(
-        actor=principal.actor,
+        actor=account.principal.actor,
         action="application.upsert",
         entity_type="job",
         entity_id=str(job_id),

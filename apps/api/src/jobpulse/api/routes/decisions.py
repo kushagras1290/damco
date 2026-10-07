@@ -8,8 +8,7 @@ from fastapi import APIRouter
 
 from jobpulse.api.deps import Paging
 from jobpulse.api.schemas import DecisionOut, Page, RuleOut
-from jobpulse.api.tenancy import Session
-from jobpulse.core.security import Reader
+from jobpulse.api.tenancy import Session, Viewer
 from jobpulse.repositories.decisions import DecisionRepository
 
 router = APIRouter(prefix="/api/v1/decisions", tags=["decisions"])
@@ -17,7 +16,7 @@ router = APIRouter(prefix="/api/v1/decisions", tags=["decisions"])
 
 @router.get("", response_model=Page[DecisionOut])
 async def list_decisions(
-    _: Reader,
+    _: Viewer,
     session: Session,
     paging: Paging,
     status: Literal["eligible", "ineligible"] | None = None,

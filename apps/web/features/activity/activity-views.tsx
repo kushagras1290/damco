@@ -7,7 +7,7 @@ import { useState } from "react";
 import { EligibilityBadge, EmptyState, ErrorState, LoadingRows, OutcomeBadge, PageHeader } from "@/components/common";
 import { Badge, Card, CardContent, CardHeader, CardTitle, Select } from "@/components/ui/primitives";
 import { TBody, TD, TH, THead, TR, Table } from "@/components/ui/table";
-import { useApplications, useDecisions, useIsOwner, useRuns, useSystem, useUpdateApplication } from "@/lib/api/hooks";
+import { useApplications, useDecisions, useCan, useRuns, useSystem, useUpdateApplication } from "@/lib/api/hooks";
 import type { ApplicationStatus, Run } from "@/lib/api/types";
 import { humanize, timeAgo } from "@/lib/utils";
 
@@ -182,7 +182,7 @@ export function DecisionsView() {
 export function ApplicationsView() {
   const { data, error, isPending } = useApplications({ limit: PAGE });
   const update = useUpdateApplication();
-  const isOwner = useIsOwner();
+  const canEdit = useCan("member");
   return (
     <>
       <PageHeader title="Applications" description="Track where you applied and how it is going." />
@@ -212,7 +212,7 @@ export function ApplicationsView() {
                     <span className="block text-xs text-muted-foreground">{application.company}</span>
                   </TD>
                   <TD>
-                    {isOwner ? (
+                    {canEdit ? (
                       <Select
                         aria-label={`Status for ${application.job_title}`}
                         className="w-40"

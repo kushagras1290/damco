@@ -9,10 +9,9 @@ from __future__ import annotations
 from decimal import Decimal
 
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from jobpulse.db.models import Profile, User
+from jobpulse.db.models import Profile
 from jobpulse_core.domain.models import CandidateProfile, EligibilityPolicy, Seniority
 
 DEFAULT_DISPLAY_NAME = "Owner"
@@ -62,12 +61,3 @@ class ProfileRepository:
         profile.embedding_model = model
         profile.embedding_hash = content_hash
         await self._session.flush()
-
-    async def upsert_user(self, *, github_login: str, role: str, email: str | None) -> User:
-        statement = (
-            insert(User)
-            .values(github_login=github_login, role=role, email=email)
-            .on_conflict_do_update(index_elements=[User.github_login], set_={"role": role, "email": email})
-            .returning(User)
-        )
-        return (await self._session.execute(statement)).scalar_one()

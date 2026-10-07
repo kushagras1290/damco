@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Badge, Card, CardContent, CardHeader, CardTitle } from "@/components/ui/primitives";
 import { TBody, TD, TH, THead, TR, Table } from "@/components/ui/table";
 import { SourceForm } from "@/features/sources/source-form";
-import { useIsOwner, useSources } from "@/lib/api/hooks";
+import { useCan, useSources } from "@/lib/api/hooks";
 import type { Source } from "@/lib/api/types";
 import { useLiveFeed } from "@/lib/stores/live-feed";
 import { formatSeconds, timeAgo } from "@/lib/utils";
@@ -39,7 +39,7 @@ export function SourceActivity({ sourceId }: { sourceId: string }) {
 
 export function SourcesView() {
   const { data, error, isPending } = useSources();
-  const isOwner = useIsOwner();
+  const canEdit = useCan("admin");
   const [adding, setAdding] = useState(false);
 
   return (
@@ -48,7 +48,7 @@ export function SourcesView() {
         title="Sources"
         description="Each source runs a durable Temporal polling workflow with adaptive intervals."
         actions={
-          isOwner ? (
+          canEdit ? (
             <Button onClick={() => setAdding((value) => !value)}>
               <Plus aria-hidden /> {adding ? "Cancel" : "Add source"}
             </Button>
@@ -69,7 +69,7 @@ export function SourcesView() {
       {isPending ? (
         <LoadingRows />
       ) : !data?.items.length ? (
-        <EmptyState title="No sources yet">{isOwner ? "Add a Greenhouse, Lever or Ashby board to begin." : null}</EmptyState>
+        <EmptyState title="No sources yet">{canEdit ? "Add a Greenhouse, Lever or Ashby board to begin." : null}</EmptyState>
       ) : (
         <Card>
           <Table>

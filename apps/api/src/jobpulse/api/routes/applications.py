@@ -9,9 +9,8 @@ from fastapi import APIRouter
 from jobpulse.api.deps import Paging
 from jobpulse.api.mappers import application_out
 from jobpulse.api.schemas import ApplicationOut, ApplicationPatch, ApplicationStatus, Page
-from jobpulse.api.tenancy import Session
+from jobpulse.api.tenancy import Member, Session, Viewer
 from jobpulse.core.errors import NotFoundError
-from jobpulse.core.security import Owner, Reader
 from jobpulse.repositories.activity import ApplicationRepository, AuditRepository
 
 router = APIRouter(prefix="/api/v1/applications", tags=["applications"])
@@ -19,7 +18,7 @@ router = APIRouter(prefix="/api/v1/applications", tags=["applications"])
 
 @router.get("", response_model=Page[ApplicationOut])
 async def list_applications(
-    _: Reader,
+    _: Viewer,
     session: Session,
     paging: Paging,
     status: ApplicationStatus | None = None,
@@ -32,7 +31,7 @@ async def list_applications(
 async def update_application(
     application_id: uuid.UUID,
     body: ApplicationPatch,
-    principal: Owner,
+    account: Member,
     session: Session,
 ) -> ApplicationOut:
     repo = ApplicationRepository(session)
@@ -46,7 +45,7 @@ async def update_application(
         setattr(application, field, value)
     await session.flush()
     await AuditRepository(session).record(
-        actor=principal.actor,
+        actor=account.principal.actor,
         action="application.update",
         entity_type="application",
         entity_id=str(application_id),

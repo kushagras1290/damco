@@ -12,13 +12,19 @@ import type {
   Decision,
   JobDetail,
   JobSummary,
+  Invitation,
+  InvitationIssued,
+  InvitableRole,
   Me,
+  Member,
   Page,
   Profile,
   Run,
   SnapshotContent,
   Source,
   SystemStatus,
+  WorkspaceInfo,
+  WorkspaceRole,
 } from "@/lib/api/types";
 import type { ProfileFormValues, SourceFormValues } from "@/lib/schemas";
 
@@ -38,12 +44,18 @@ export const keys = {
   applications: (params: QueryParams) => ["applications", params] as const,
   profile: ["profile"] as const,
   system: ["system"] as const,
+  members: ["workspace", "members"] as const,
+  invitations: ["workspace", "invitations"] as const,
 };
 
 export const useMe = () => useQuery({ queryKey: keys.me, queryFn: () => api.get<Me>("/me"), staleTime: 60_000 });
 
-export function useIsOwner(): boolean {
-  return useMe().data?.role === "OWNER";
+const ROLE_RANK: Record<WorkspaceRole, number> = { viewer: 0, member: 1, admin: 2, owner: 3 };
+
+/** UI gating only - the API enforces the same rule from the database on every request. */
+export function useCan(minimum: Exclude<WorkspaceRole, "viewer">): boolean {
+  const role = useMe().data?.role;
+  return role != null && ROLE_RANK[role] >= ROLE_RANK[minimum];
 }
 
 export const useDashboard = () =>
@@ -154,3 +166,58 @@ export function useUpdateProfile() {
     onSuccess: (profile) => client.setQueryData(keys.profile, profile),
   });
 }
+
+// ------------------------------------------------------------------ workspaces
+
+export const useMembers = (enabled: boolean) =>
+  useQuery({ queryKey: keys.members, queryFn: () => api.get<Member[]>("/workspace/members"), enabled });
+
+export const useInvitations = (enabled: boolean) =>
+  useQuery({ queryKey: keys.invitations, queryFn: () => api.get<Invitation[]>("/workspace/invitations"), enabled });
+
+export function useInvite() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { role: InvitableRole; email?: string }) => api.post<InvitationIssued>("/workspace/invitations", body),
+    onSuccess: () => client.invalidateQueries({ queryKey: keys.invitations }),
+  });
+}
+
+export function useRevokeInvitation() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`/workspace/invitations/${id}`),
+    onSuccess: () => client.invalidateQueries({ queryKey: keys.invitations }),
+  });
+}
+
+export function useChangeMemberRole() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, role }: { userId: string; role: InvitableRole }) =>
+      api.patch<Member>(`/workspace/members/${userId}`, { role }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["workspace"] }),
+  });
+}
+
+export function useRemoveMember() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string) => api.delete(`/workspace/members/${userId}`),
+    onSuccess: () => client.invalidateQueries(),
+  });
+}
+
+export function useRenameWorkspace() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => api.patch<WorkspaceInfo>("/workspace", { name }),
+    onSuccess: () => client.invalidateQueries({ queryKey: keys.me }),
+  });
+}
+
+export const useCreateWorkspace = () =>
+  useMutation({ mutationFn: (name: string) => api.post<WorkspaceInfo>("/workspaces", { name }) });
+
+export const useAcceptInvitation = () =>
+  useMutation({ mutationFn: (token: string) => api.post<{ workspace_id: string }>("/invitations/accept", { token }) });

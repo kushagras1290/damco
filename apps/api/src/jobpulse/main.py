@@ -20,7 +20,7 @@ from redis.asyncio import Redis
 from starlette.datastructures import Headers
 from starlette.types import Scope
 
-from jobpulse.api.routes import applications, decisions, events, jobs, profile, runs, sources, system
+from jobpulse.api.routes import applications, decisions, events, jobs, profile, runs, sources, system, workspaces
 from jobpulse.core.cache import ResponseCache
 from jobpulse.core.circuit import CircuitBreaker
 from jobpulse.core.config import Settings, get_settings
@@ -57,6 +57,7 @@ ROUTERS = (
     applications.router,
     decisions.router,
     events.router,
+    workspaces.router,
     system.router,
 )
 
@@ -115,7 +116,7 @@ def _install_middleware(app: FastAPI, settings: Settings, redis: Redis | None, b
             CORSMiddleware,
             allow_origins=settings.cors_allowed_origins,
             allow_credentials=False,
-            allow_methods=["GET", "POST", "PATCH"],
+            allow_methods=["GET", "POST", "PATCH", "DELETE"],
             allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Request-ID"],
             expose_headers=["RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset", "Retry-After", "X-Request-ID"],
             max_age=CORS_MAX_AGE_SECONDS,

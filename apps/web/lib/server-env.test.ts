@@ -15,7 +15,6 @@ const PRODUCTION = {
   API_BASE_URL: "https://api.jobpulse.example",
   AUTH_GITHUB_ID: "id",
   AUTH_GITHUB_SECRET: "secret",
-  OWNER_GITHUB_IDS: "583231, 42",
 };
 
 const issues = (input: Record<string, string>) =>
@@ -24,7 +23,6 @@ const issues = (input: Record<string, string>) =>
 describe("serverEnvSchema", () => {
   it("accepts a complete production configuration", () => {
     const parsed = serverEnvSchema.parse(PRODUCTION);
-    expect(parsed.OWNER_GITHUB_IDS).toEqual(["583231", "42"]);
     expect(parsed.API_JWT_PRIVATE_JWK.kid).toBe("k1");
   });
 
@@ -36,14 +34,12 @@ describe("serverEnvSchema", () => {
     [{ AUTH_URL: "http://jobpulse.example" }, "AUTH_URL must be an https:// URL in production"],
     [{ API_BASE_URL: "http://api.internal" }, "API_BASE_URL must be https:// in production"],
     [{ AUTH_GITHUB_ID: "", AUTH_GITHUB_SECRET: "" }, "GitHub OAuth is required in production"],
-    [{ OWNER_GITHUB_IDS: "" }, "at least one owner id is required in production"],
   ])("rejects unsafe production config %j", (override, message) => {
     expect(issues({ ...PRODUCTION, ...override })).toContain(message);
   });
 
   it.each([
     [{ AUTH_SECRET: "short" }, "AUTH_SECRET must be at least 32 characters"],
-    [{ OWNER_GITHUB_IDS: "octocat" }, "OWNER_GITHUB_IDS must be numeric GitHub user ids"],
     [{ API_JWT_PRIVATE_JWK: "{oops" }, "API_JWT_PRIVATE_JWK is not valid JSON"],
     [{ API_JWT_PRIVATE_JWK: JSON.stringify({ kty: "oct", k: "x", kid: "k" }) }, "API_JWT_PRIVATE_JWK must be an Ed25519 (OKP) key"],
     [{ AUTH_GITHUB_ID: "id" }, "set both AUTH_GITHUB_ID and AUTH_GITHUB_SECRET"],

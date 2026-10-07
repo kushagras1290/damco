@@ -7,13 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/primitives";
 import { TBody, TD, TH, THead, TR, Table } from "@/components/ui/table";
 import { SourceHealth } from "@/features/sources/sources-view";
-import { useIsOwner, useRuns, useSource, useSyncSource, useUpdateSource } from "@/lib/api/hooks";
+import { useCan, useRuns, useSource, useSyncSource, useUpdateSource } from "@/lib/api/hooks";
 import { formatSeconds, timeAgo } from "@/lib/utils";
 
 export function SourceDetailView({ id }: { id: string }) {
   const { data: source, error, isPending } = useSource(id);
   const runs = useRuns({ source_id: id, limit: 10 });
-  const isOwner = useIsOwner();
+  const canEdit = useCan("admin");
   const update = useUpdateSource(id);
   const sync = useSyncSource(id);
 
@@ -26,7 +26,7 @@ export function SourceDetailView({ id }: { id: string }) {
         title={source.name}
         description={`${source.company} · ${source.kind}`}
         actions={
-          isOwner ? (
+          canEdit ? (
             <>
               <Button variant="outline" onClick={() => sync.mutate()} disabled={!source.enabled || sync.isPending}>
                 <RefreshCw aria-hidden /> {sync.isSuccess ? "Sync queued" : "Sync now"}

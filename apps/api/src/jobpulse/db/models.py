@@ -52,6 +52,7 @@ CURRENT_WORKSPACE = text("NULLIF(current_setting('app.workspace_id', true), ''):
 DEFAULT_WORKSPACE_ID = uuid.UUID("00000000-0000-7000-8000-000000000001")
 PLANS = ("free", "pro", "team")
 WORKSPACE_ROLES = ("owner", "admin", "member")
+IDENTITY_PROVIDERS = ("github", "google", "microsoft", "email")
 
 
 class Base(DeclarativeBase):
@@ -110,15 +111,53 @@ class Membership(Base):
 
 
 class User(Base):
+    """A person. Sign-in identities (GitHub, Google, ...) link to it; roles live in memberships."""
+
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = _pk()
-    github_login: Mapped[str] = mapped_column(String(100), unique=True)
+    display_name: Mapped[str] = mapped_column(String(200), server_default="")
     email: Mapped[str | None] = mapped_column(String(320))
-    role: Mapped[str] = mapped_column(String(20), server_default="PUBLIC_DEMO")
+    # Legacy single-tenant columns (pre-0003); unused, dropped by the next contract migration.
+    github_login: Mapped[str | None] = mapped_column(String(100), unique=True, deferred=True)
+    role: Mapped[str] = mapped_column(String(20), server_default="PUBLIC_DEMO", deferred=True)
     created_at: Mapped[datetime] = _created()
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (CheckConstraint("role IN ('PUBLIC_DEMO','OWNER')", name="role_valid"),)
+
+
+class Identity(Base):
+    """An external sign-in identity, e.g. provider='github', subject='583231' (immutable id)."""
+
+    __tablename__ = "identities"
+
+    provider: Mapped[str] = mapped_column(String(20), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = _created()
+
+    __table_args__ = (CheckConstraint(f"provider IN ({_in(IDENTITY_PROVIDERS)})", name="provider_valid"),)
+
+
+class Invitation(Base):
+    """Single-use, expiring invitation to a workspace. Only the token's SHA-256 is stored."""
+
+    __tablename__ = "invitations"
+
+    id: Mapped[uuid.UUID] = _pk()
+    workspace_id: Mapped[uuid.UUID] = _workspace()
+    email: Mapped[str | None] = mapped_column(String(320))
+    role: Mapped[str] = mapped_column(String(20), server_default="member")
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    invited_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    accepted_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _created()
+
+    __table_args__ = (CheckConstraint(f"role IN ({_in(WORKSPACE_ROLES)})", name="role_valid"),)
 
 
 class Profile(Base):

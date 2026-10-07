@@ -25,6 +25,8 @@ services:
       - { key: DATABASE_LISTEN_URL, sync: false }
       - { key: API_JWT_JWKS, sync: false }
       - { key: OWNER_GITHUB_IDS, sync: false }
+      # open | invite | closed - start invite-only until billing is live.
+      - { key: SIGNUP_POLICY, value: invite }
       - key: REDIS_URL
         fromService: { type: keyvalue, name: jobpulse-redis, property: connectionString }
       - { key: TEMPORAL_ADDRESS, sync: false }

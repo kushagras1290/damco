@@ -16,8 +16,9 @@
 ## First-time setup checklist
 
 1. **Keys**: `make keys` → `API_JWT_PRIVATE_JWK` to Vercel, `API_JWT_JWKS` to Render (API).
-2. **Owners**: `gh api users/<login> --jq .id` → `OWNER_GITHUB_IDS` on **both** Vercel and Render
-   (the API's copy is authoritative; the web copy only gates sign-in and UI).
+2. **Platform admins**: `gh api users/<login> --jq .id` → `OWNER_GITHUB_IDS` on Render (API only).
+   They own the Default (public demo) workspace. Everyone else signs up per `SIGNUP_POLICY`
+   (`open` | `invite` | `closed`; the blueprint starts with `invite`) and gets roles per workspace.
 3. **GitHub App (sign-in)**: add callback `https://<web-domain>/api/auth/callback/github` to the
    existing app (no permissions needed; see README for the pre-filled registration link); set
    `AUTH_GITHUB_ID`, `AUTH_GITHUB_SECRET`, `AUTH_SECRET` (≥ 32 chars), `AUTH_URL=https://<web-domain>`.
@@ -65,7 +66,7 @@ migrate → API → worker → web → smoke tests. Consequences:
 | API signing key | `make keys` (new `kid`) → **append** its public key to `API_JWT_JWKS`, deploy API → set new `API_JWT_PRIVATE_JWK` on web → after 5 min (token TTL) remove the old public key |
 | `AUTH_SECRET` (session cookies) | Set new value as `AUTH_SECRET`, move the old one to `AUTH_SECRET_1`; remove after the 8 h session lifetime |
 | GitHub OAuth secret | Rotate in GitHub, update Vercel env, redeploy web |
-| Revoke an owner | Remove the id from `OWNER_GITHUB_IDS` on API (+ web). Effective on the next request - roles are re-evaluated per request, never trusted from tokens |
+| Revoke access | Remove the member in *Workspace → Members* (or demote). Effective on the next request: roles are read from memberships per request, never trusted from tokens. Removing an id from `OWNER_GITHUB_IDS` stops future re-bootstrap; also remove their Default-workspace membership |
 | `WEBHOOK_SIGNING_SECRET` | Coordinate with receivers; they verify `X-JobPulse-Signature` |
 
 ## Alerts worth wiring (Prometheus metric → action)
@@ -92,7 +93,8 @@ migrate → API → worker → web → smoke tests. Consequences:
 
 - **All sources failing** → check outbound allowlist (`OUTBOUND_ALLOWED_HOSTS`) and DNS.
 - **401s from the API** → `kid` mismatch between web private key and API JWKS, or clock skew > 30 s.
-- **Owner sees read-only UI** → their numeric id missing from `OWNER_GITHUB_IDS` on the API.
+- **User sees read-only UI** → they are a viewer/member in the selected workspace; check *Workspace →
+  Members*. Platform admins need their numeric id in `OWNER_GITHUB_IDS` on the API.
 - **UI shows "Polling" instead of "Live"** → API logged `events.disabled` (pooled URL without
   `DATABASE_LISTEN_URL`) or the LISTEN connection is reconnecting (`events.listener_disconnected`).
 - **Burst of 503 `idempotency_unavailable`** → Redis down; unkeyed reads/writes still work.

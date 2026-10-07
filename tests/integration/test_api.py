@@ -14,6 +14,7 @@ import pytest
 
 from jobpulse.api.deps import get_ctx, get_temporal
 from jobpulse.core.config import Settings
+from jobpulse.db.models import DEFAULT_WORKSPACE_ID
 from jobpulse.main import create_app
 from jobpulse.services.context import AppContext
 from tests.auth_helpers import OWNER_ID, SIGNING_KEY, VISITOR_ID, make_token, other_signing_key
@@ -88,10 +89,9 @@ async def test_public_demo_is_read_only(api: httpx.AsyncClient) -> None:
         "board_token": "acme",
     }
     anonymous = await api.post("/api/v1/sources", json=body)
-    demo = await api.post("/api/v1/sources", json=body, headers=DEMO)
-    assert anonymous.status_code == 403
-    assert demo.status_code == 403
-    assert demo.headers["content-type"].startswith("application/problem+json")
+    assert anonymous.status_code == 403  # anonymous visitors are viewers of the demo workspace
+    assert anonymous.headers["content-type"].startswith("application/problem+json")
+    assert (await api.get("/api/v1/me")).json()["role"] == "viewer"
 
 
 def _unsigned_alg_none_token() -> str:
@@ -131,31 +131,46 @@ async def test_invalid_tokens_rejected(api: httpx.AsyncClient, token: str) -> No
     assert response.headers["www-authenticate"] == "Bearer"
 
 
-async def test_role_is_decided_by_api_not_by_token_claims(api: httpx.AsyncClient) -> None:
-    forged = {"Authorization": f"Bearer {make_token(VISITOR_ID, login='visitor', role='OWNER')}"}
+async def test_role_and_workspace_claims_grant_nothing(api: httpx.AsyncClient) -> None:
+    # A signed-in stranger forges an owner role claim and selects the Default workspace.
+    token = make_token(VISITOR_ID, login="visitor", role="OWNER", wid=str(DEFAULT_WORKSPACE_ID))
+    forged = {"Authorization": f"Bearer {token}"}
     me = (await api.get("/api/v1/me", headers=forged)).json()
-    assert me["role"] == "PUBLIC_DEMO"
+    assert me["platform_admin"] is False
+    assert me["workspace"]["id"] != str(DEFAULT_WORKSPACE_ID)  # not a member: falls back to their own
+    assert me["workspace"]["personal"] is True
+    assert [w["id"] for w in me["workspaces"]] == [me["workspace"]["id"]]
     body = {"kind": "lever", "name": "x", "company_name": "X", "company_domain": "x.io", "board_token": "x"}
-    assert (await api.post("/api/v1/sources", json=body, headers=forged)).status_code == 403
+    assert (await api.post("/api/v1/sources", json=body, headers=forged)).status_code == 201  # their workspace
+    owners_view = (await api.get("/api/v1/sources", headers=OWNER)).json()
+    assert owners_view["total"] == 0  # nothing leaked into the Default workspace
 
 
-async def test_owner_login_rename_does_not_change_authorization(api: httpx.AsyncClient) -> None:
-    # Owner identity is the immutable numeric id; a different account using the
-    # owner's former login gains nothing.
+async def test_identity_is_the_immutable_id_not_the_login(api: httpx.AsyncClient) -> None:
+    # A different account using the owner's former login gains nothing.
     squatter = {"Authorization": f"Bearer {make_token(VISITOR_ID, login='octocat')}"}
     renamed_owner = {"Authorization": f"Bearer {make_token(OWNER_ID, login='new-name')}"}
-    assert (await api.get("/api/v1/me", headers=squatter)).json()["role"] == "PUBLIC_DEMO"
-    assert (await api.get("/api/v1/me", headers=renamed_owner)).json()["role"] == "OWNER"
+    squatter_me = (await api.get("/api/v1/me", headers=squatter)).json()
+    owner_me = (await api.get("/api/v1/me", headers=renamed_owner)).json()
+    assert squatter_me["platform_admin"] is False
+    assert squatter_me["workspace"]["id"] != str(DEFAULT_WORKSPACE_ID)
+    assert owner_me["platform_admin"] is True
+    assert owner_me["workspace"]["id"] == str(DEFAULT_WORKSPACE_ID)
+    assert owner_me["role"] == "owner"
 
 
 async def test_me(api: httpx.AsyncClient) -> None:
-    assert (await api.get("/api/v1/me", headers=OWNER)).json() == {
-        "subject": f"github:{OWNER_ID}",
-        "login": "octocat",
-        "role": "OWNER",
-        "authenticated": True,
-    }
-    assert (await api.get("/api/v1/me")).json()["authenticated"] is False
+    me = (await api.get("/api/v1/me", headers=OWNER)).json()
+    assert me["subject"] == f"github:{OWNER_ID}"
+    assert me["login"] == "octocat"
+    assert me["authenticated"] is True
+    assert me["platform_admin"] is True
+    assert me["role"] == "owner"
+    assert me["workspace"]["id"] == str(DEFAULT_WORKSPACE_ID)
+    assert me["user_id"]
+    anonymous = (await api.get("/api/v1/me")).json()
+    assert anonymous["authenticated"] is False
+    assert anonymous["user_id"] is None
 
 
 async def test_owner_creates_source_and_polling_starts(api: httpx.AsyncClient, temporal: FakeTemporal) -> None:

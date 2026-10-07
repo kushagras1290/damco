@@ -167,10 +167,15 @@ class AuditRepository:
         entity_type: str,
         entity_id: str | None,
         payload: dict[str, Any] | None = None,
+        workspace_id: uuid.UUID | None = None,
     ) -> None:
-        self._session.add(
-            AuditEvent(actor=actor, action=action, entity_type=entity_type, entity_id=entity_id, payload=payload or {}),
+        """``workspace_id`` defaults to the transaction's workspace scope (pass it in system scope)."""
+        event = AuditEvent(
+            actor=actor, action=action, entity_type=entity_type, entity_id=entity_id, payload=payload or {}
         )
+        if workspace_id is not None:
+            event.workspace_id = workspace_id
+        self._session.add(event)
         await self._session.flush()
 
     async def list(self, *, entity_type: str | None, entity_id: str | None, limit: int) -> Sequence[AuditEvent]:

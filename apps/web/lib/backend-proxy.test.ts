@@ -11,9 +11,10 @@ import {
   isSameOrigin,
   mintBackendToken,
   passthroughResponseHeaders,
+  selectedWorkspace,
   visitorSubject,
 } from "@/lib/backend-proxy";
-import { roleForGithubId } from "@/lib/roles";
+import { workspaceCookie } from "@/lib/workspace-cookie";
 
 describe("backendPath", () => {
   it.each([
@@ -142,11 +143,34 @@ describe("passthroughResponseHeaders", () => {
   });
 });
 
-describe("roleForGithubId", () => {
-  it("grants OWNER only to allowlisted numeric ids", () => {
-    expect(roleForGithubId("583231", ["583231"])).toBe("OWNER");
-    expect(roleForGithubId("42", ["583231"])).toBe("PUBLIC_DEMO");
-    expect(roleForGithubId(undefined, ["583231"])).toBe("PUBLIC_DEMO");
-    expect(roleForGithubId("583231", [])).toBe("PUBLIC_DEMO");
+describe("workspace selection", () => {
+  const WS = "0192f0c4-1111-7000-8000-000000000000";
+
+  it("forwards only well-formed workspace ids", () => {
+    expect(selectedWorkspace(WS.toUpperCase())).toBe(WS);
+    expect(selectedWorkspace(undefined)).toBeUndefined();
+    expect(selectedWorkspace("default")).toBeUndefined();
+    expect(selectedWorkspace(`${WS}; admin=true`)).toBeUndefined();
+  });
+
+  it("puts the selection in the wid claim, never a role", async () => {
+    const { privateKey, publicKey } = await generateKeyPair("EdDSA", { crv: "Ed25519", extractable: true });
+    const privateJwk = { ...(await exportJWK(privateKey)), kid: "k1" } as PrivateSigningJwk;
+    const token = await mintBackendToken({
+      subject: githubSubject("583231"),
+      login: "octocat",
+      workspaceId: WS,
+      privateJwk,
+      audience: "jobpulse-api",
+      issuer: "jobpulse-web",
+    });
+    const { payload } = await jwtVerify(token, publicKey, { audience: "jobpulse-api", issuer: "jobpulse-web" });
+    expect(payload.wid).toBe(WS);
+    expect(payload).not.toHaveProperty("role");
+  });
+
+  it("writes a scoped, lax cookie and refuses junk", () => {
+    expect(workspaceCookie(WS, true)).toBe(`jp_workspace=${WS}; Path=/; Max-Age=31536000; SameSite=Lax; Secure`);
+    expect(() => workspaceCookie("x; Domain=evil.example", false)).toThrow("invalid workspace id");
   });
 });

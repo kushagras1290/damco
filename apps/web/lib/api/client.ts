@@ -7,7 +7,7 @@ const RETRYABLE_STATUSES = new Set([409, 502, 503, 504]);
 const MAX_RETRY_DELAY_MS = 5_000;
 const BASE_RETRY_DELAY_MS = 400;
 
-type Method = "GET" | "POST" | "PATCH";
+type Method = "GET" | "POST" | "PATCH" | "DELETE";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -101,4 +101,5 @@ export const api = {
   get: <T>(path: string, params?: QueryParams) => send<T>("GET", `${path}${buildQuery(params)}`, undefined, null),
   post: <T>(path: string, body?: unknown) => mutate<T>("POST", path, body ?? {}),
   patch: <T>(path: string, body: unknown) => mutate<T>("PATCH", path, body),
+  delete: (path: string) => mutate<null>("DELETE", path, undefined),
 };
