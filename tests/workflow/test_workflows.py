@@ -33,7 +33,7 @@ from jobpulse_core.contracts import (
 )
 from jobpulse_worker.workflows import ALL_WORKFLOWS
 
-pytestmark = [pytest.mark.workflow, pytest.mark.asyncio(loop_scope="module")]
+pytestmark = pytest.mark.workflow
 TASK_QUEUE = "test-jobpulse"
 
 
@@ -135,7 +135,9 @@ def stub_activities(rec: Recorder) -> list[object]:
     return [run_start, run_finish, schedule, fetch, normalize, store, record_poll, *stages]
 
 
-@pytest_asyncio.fixture(scope="module", loop_scope="module")
+# Function-scoped: each test gets an isolated time-skipping server (~0.1 s startup), so
+# abandoned child workflows from one test can never stall timers in another.
+@pytest_asyncio.fixture
 async def env() -> AsyncIterator[WorkflowEnvironment]:
     try:
         environment = await WorkflowEnvironment.start_time_skipping(data_converter=pydantic_data_converter)

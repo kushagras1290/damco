@@ -29,3 +29,8 @@ in production. Web: CSP, frame-ancestors none, `poweredByHeader` off.
 
 ## CI scanning
 Gitleaks, Semgrep, CodeQL (Python + TS), Trivy (filesystem and images), pip-audit, pnpm audit.
+
+## Supply chain
+7-day release cooldowns (pnpm, uv, Dependabot), pnpm trust-downgrade guard, no exotic
+sub-dependencies, install-script allowlist, and every GitHub Action pinned to a commit SHA.
+Reviewed exceptions are listed in [ADR 0005](adr/0005-dependency-supply-chain-policy.md).

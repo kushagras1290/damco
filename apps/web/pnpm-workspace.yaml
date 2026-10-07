@@ -1,7 +1,23 @@
 packages:
   - "."
 
-# Only these dependencies may run install scripts (supply-chain hardening).
+# Supply-chain hardening (see docs/adr/0005-dependency-supply-chain-policy.md)
+# Only these dependencies may run install scripts.
 allowBuilds:
   unrs-resolver: true
   sharp: true
+# Never install versions published less than 7 days ago (time for malicious releases to be caught).
+minimumReleaseAge: 10080
+# Transitive dependencies may only come from the registry (no git/tarball URLs).
+blockExoticSubdeps: true
+# Reject releases that downgrade publishing trust (e.g. provenance suddenly missing)...
+trustPolicy: no-downgrade
+# ...for releases younger than 30 days, where takeover risk lives. Older, established
+# versions (e.g. legacy majors that predate provenance) are not re-litigated.
+trustPolicyIgnoreAfter: 43200
+# Security fix exception (CVE-2026-93749, source-map-js DoS): 1.2.2 is inside the cooldown
+# window. Reviewed: same maintainer, no new dependencies or install scripts, small diff.
+minimumReleaseAgeExclude:
+  - source-map-js@1.2.2
+overrides:
+  source-map-js: 1.2.2

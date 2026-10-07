@@ -33,12 +33,18 @@ os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.setdefault("LOG_JSON", "false")
 
 
-def pytest_asyncio_loop_factories(
-    config: pytest.Config, item: pytest.Item
-) -> Mapping[str, Callable[[], asyncio.AbstractEventLoop]] | None:
-    """psycopg async needs a selector loop on Windows (Proactor is unsupported)."""
-    factory = loop_factory()
-    return {"selector": factory} if factory is not None else None
+_SELECTOR_LOOP = loop_factory()
+
+if _SELECTOR_LOOP is not None:
+    # Defined only where needed: pytest-asyncio rejects a hook that returns no factories,
+    # so on Linux/macOS the plugin's default loop is used.
+
+    def pytest_asyncio_loop_factories(
+        config: pytest.Config, item: pytest.Item
+    ) -> Mapping[str, Callable[[], asyncio.AbstractEventLoop]]:
+        """psycopg async needs a selector loop on Windows (Proactor is unsupported)."""
+        assert _SELECTOR_LOOP is not None
+        return {"selector": _SELECTOR_LOOP}
 
 
 def load_fixture(relative: str) -> Any:
