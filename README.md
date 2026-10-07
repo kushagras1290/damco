@@ -44,10 +44,21 @@ make seed                       # demo profile + three public job boards
 - API docs → http://localhost:8000/docs
 - Temporal UI → http://localhost:8233
 
-**Owner access:** create a GitHub OAuth app (callback `http://localhost:3000/api/auth/callback/github`),
-set `AUTH_GITHUB_ID`, `AUTH_GITHUB_SECRET` and `OWNER_GITHUB_IDS=<your numeric GitHub id>`
-(`gh api users/<login> --jq .id`). Only allowlisted owners can sign in; everyone else uses the
-read-only public demo without an account.
+**Owner access (GitHub sign-in):**
+
+1. Register a **GitHub App** (preferred over a classic OAuth App: up to 10 callback URLs, so one
+   app serves local + production, and it needs **no permissions**). This link pre-fills the form -
+   just pick a unique name and click *Create GitHub App*:
+   [https://github.com/settings/apps/new?name=JobPulse&descripti…](https://github.com/settings/apps/new?name=JobPulse&description=Sign%20in%20with%20GitHub%20for%20JobPulse&callback_urls[]=http://localhost:3000/api/auth/callback/github&webhook_active=false&public=false)
+2. On the app page copy the **Client ID**, click **Generate a new client secret**, and set
+   `AUTH_GITHUB_ID` / `AUTH_GITHUB_SECRET` in `.env` (never commit or paste the secret elsewhere).
+3. Set `OWNER_GITHUB_IDS=<your numeric GitHub id>` (`gh api users/<login> --jq .id`).
+4. `docker compose up -d --force-recreate web`, sign in at http://localhost:3000, then open
+   `/api/backend/me` - it should show `"role":"OWNER"`.
+
+Only allowlisted owners can sign in; everyone else uses the read-only public demo without an
+account. For production, add `https://<web-domain>/api/auth/callback/github` as an extra callback
+URL in the same app's settings.
 
 **AI enrichment** is optional. Without `OPENAI_API_KEY`, JobPulse runs in deterministic-only
 mode: hard rules and keyword skill matching still work; unknown rules remain flagged for review.

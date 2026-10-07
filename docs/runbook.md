@@ -16,7 +16,8 @@
 1. **Keys**: `make keys` → `API_JWT_PRIVATE_JWK` to Vercel, `API_JWT_JWKS` to Render (API).
 2. **Owners**: `gh api users/<login> --jq .id` → `OWNER_GITHUB_IDS` on **both** Vercel and Render
    (the API's copy is authoritative; the web copy only gates sign-in and UI).
-3. **GitHub OAuth app**: callback `https://<web-domain>/api/auth/callback/github`; set
+3. **GitHub App (sign-in)**: add callback `https://<web-domain>/api/auth/callback/github` to the
+   existing app (no permissions needed; see README for the pre-filled registration link); set
    `AUTH_GITHUB_ID`, `AUTH_GITHUB_SECRET`, `AUTH_SECRET` (≥ 32 chars), `AUTH_URL=https://<web-domain>`.
 4. **Web**: `ENVIRONMENT=production`, `API_BASE_URL=https://<api-domain>`. Production config
    validation refuses to serve with http URLs, missing OAuth or no owners.
