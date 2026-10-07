@@ -11,13 +11,14 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
-from importlib import resources
+from pathlib import Path
 from typing import Any
 
 from jobpulse_core.domain.models import RawJob, SourceCheckpoint, SourceDefinition
 from jobpulse_core.ingestion.http import FetchResult
 from jobpulse_core.sources.base import DiscoveryResult
 
+DEMO_BOARD_FILE = Path(__file__).with_name("demo_board.json")
 INITIAL_RELEASE = 6
 RELEASE_PER_POLL = 3
 CURSOR_KEY = "demo_released"
@@ -26,7 +27,7 @@ MINUTES_BETWEEN_POSTINGS = 7  # spreads publish times so freshness scoring varie
 
 @lru_cache(maxsize=1)
 def demo_postings() -> tuple[dict[str, Any], ...]:
-    raw = resources.files("jobpulse_core.sources").joinpath("demo_board.json").read_text(encoding="utf-8")
+    raw = DEMO_BOARD_FILE.read_text(encoding="utf-8")
     return tuple(json.loads(raw)["jobs"])
 
 

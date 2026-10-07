@@ -14,11 +14,12 @@ import pytest
 from pydantic import SecretStr
 from redis.asyncio import Redis
 
-from jobpulse.api.deps import get_ctx
+from jobpulse.api.deps import get_ctx, get_temporal
 from jobpulse.core.config import Settings
 from jobpulse.main import create_app
 from jobpulse.services.context import AppContext
 from tests.auth_helpers import make_token
+from tests.integration.test_api import FakeTemporal
 
 pytestmark = pytest.mark.integration
 
@@ -37,6 +38,8 @@ SOURCE_BODY = {
 async def client_for(settings: Settings, ctx: AppContext) -> AsyncGenerator[httpx.AsyncClient]:
     app = create_app(settings)
     app.dependency_overrides[get_ctx] = lambda: ctx
+    temporal = FakeTemporal()
+    app.dependency_overrides[get_temporal] = lambda: temporal  # never depend on a live Temporal
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

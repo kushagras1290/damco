@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 import psycopg
 import structlog
+from psycopg import sql
 
 from jobpulse.services.events import EVENT_CHANNEL
 
@@ -103,7 +104,7 @@ class EventHub:
                 async with await psycopg.AsyncConnection.connect(
                     dsn, autocommit=True, connect_timeout=CONNECT_TIMEOUT_SECONDS
                 ) as connection:
-                    await connection.execute(f"LISTEN {EVENT_CHANNEL}")
+                    await connection.execute(sql.SQL("LISTEN {}").format(sql.Identifier(EVENT_CHANNEL)))
                     self._connected.set()
                     delay = RECONNECT_INITIAL_SECONDS
                     logger.info("events.listening", channel=EVENT_CHANNEL)

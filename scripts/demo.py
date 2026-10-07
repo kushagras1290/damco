@@ -15,6 +15,7 @@ Stop with:  docker compose down
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import secrets
@@ -22,8 +23,6 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 import webbrowser
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -32,9 +31,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
-API_READY_URL = "http://localhost:8000/health/ready"
-WEB_URL = "http://localhost:3000"
-DASHBOARD_URL = f"{WEB_URL}/dashboard"
+LOCALHOST = "localhost"
+API_PORT = 8000
+WEB_PORT = 3000
+DASHBOARD_URL = f"http://{LOCALHOST}:{WEB_PORT}/dashboard"
 SEED_FILES = ("/app/seed.yaml", "/app/seed.demo.yaml")
 DEFAULT_TIMEOUT_SECONDS = 900
 PROBE_TIMEOUT_SECONDS = 3
@@ -138,12 +138,17 @@ def docker_compose(*args: str, timeout: float) -> None:
         raise DemoError(msg)
 
 
-def http_ok(url: str) -> bool:
+def http_ok(port: int, path: str) -> bool:
+    """Plain HTTP GET against a fixed local port (no URL parsing, no other schemes)."""
+    connection = http.client.HTTPConnection(LOCALHOST, port, timeout=PROBE_TIMEOUT_SECONDS)
     try:
-        with urllib.request.urlopen(url, timeout=PROBE_TIMEOUT_SECONDS) as response:  # noqa: S310 - fixed localhost URLs
-            return 200 <= response.status < 400
-    except urllib.error.URLError, OSError:
+        connection.request("GET", path)
+        status = connection.getresponse().status
+    except OSError, http.client.HTTPException:
         return False
+    finally:
+        connection.close()
+    return 200 <= status < 400
 
 
 def wait_until(name: str, ready: Callable[[], bool], deadline: float) -> None:
@@ -171,8 +176,8 @@ def run(args: argparse.Namespace) -> None:
     docker_compose(*up_args, timeout=max(1.0, deadline - time.monotonic()))
 
     step("Waiting for services")
-    wait_until("API", lambda: http_ok(API_READY_URL), deadline)
-    wait_until("Web", lambda: http_ok(WEB_URL), deadline)
+    wait_until("API", lambda: http_ok(API_PORT, "/health/ready"), deadline)
+    wait_until("Web", lambda: http_ok(WEB_PORT, "/"), deadline)
 
     step("Seeding profile, public job boards and the live demo board")
     for seed in SEED_FILES:
