@@ -32,7 +32,8 @@ from jobpulse_core.errors import (
 logger = structlog.get_logger(__name__)
 
 DEFAULT_USER_AGENT = "JobPulseBot/0.1 (+https://github.com/jobpulse; job discovery)"
-DEFAULT_MAX_BYTES = 10 * 1024 * 1024
+# Real boards are large: Anthropic's Greenhouse listing with content is ~9 MB (2026-10).
+DEFAULT_MAX_BYTES = 32 * 1024 * 1024
 DEFAULT_MAX_REDIRECTS = 5
 ROBOTS_CACHE_TTL_SECONDS = 3600.0
 ROBOTS_MAX_BYTES = 512 * 1024

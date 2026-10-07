@@ -15,9 +15,16 @@ SOURCE_FETCH_DURATION = Histogram(
     buckets=(0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30, 60),
 )
 SOURCE_FAILURES = Counter("source_failures_total", "Source fetch failures", ["source_kind", "error"])
+SOURCE_PAYLOAD_NEAR_LIMIT = Counter(
+    "source_payload_near_limit_total", "Fetched payloads above 75% of the response size limit", ["source_kind"]
+)
+SUSPICIOUS_LISTINGS = Counter(
+    "source_suspicious_listings_total", "Listings ignored for closures (e.g. sudden shrink)", ["reason"]
+)
 
 LLM_REQUESTS = Counter("llm_requests_total", "LLM / embedding requests", ["model", "kind", "outcome"])
 LLM_COST_USD = Counter("llm_cost_usd_total", "Estimated LLM spend in USD", ["model"])
+LLM_BUDGET_EXHAUSTED = Counter("llm_budget_exhausted_total", "Enrichments skipped by the daily spend guard", ["limit"])
 
 NOTIFICATIONS_SENT = Counter("notifications_sent_total", "Notifications delivered", ["channel", "outcome"])
 JOB_PROCESSING_DURATION = Histogram(

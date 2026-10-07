@@ -19,8 +19,8 @@ sources should be configured with a long interval or a future "incremental" flag
 **Single primary profile.** v1 is single-tenant (an owner + read-only demo). Tables already
 carry `profile_id`, so multi-profile scoring is additive.
 
-**Shared HS256 secret between web and API.** Simple and fast; rotating it requires a
-coordinated deploy. Asymmetric keys (EdDSA + JWKS) are the upgrade path.
+**Asymmetric web → API tokens.** Ed25519 keys mean the API can verify but never mint; the
+cost is managing a key pair and a rotation procedure (docs/runbook.md).
 
 **In-process rate limiting.** Correct for one API instance; with more instances, rate-limit at
 the edge (Render / Cloudflare).

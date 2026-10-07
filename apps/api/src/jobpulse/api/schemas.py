@@ -366,5 +366,6 @@ class SystemStatus(BaseModel):
 
 class Me(BaseModel):
     subject: str
+    login: str | None
     role: str
     authenticated: bool

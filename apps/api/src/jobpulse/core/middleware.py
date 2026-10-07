@@ -12,6 +12,7 @@ import re
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import structlog
@@ -144,18 +145,40 @@ class _Bucket:
 
 
 class RateLimitMiddleware:
-    """In-process token bucket per client IP.
+    """In-process token bucket per verified identity, else per client IP.
 
-    Adequate for a single API instance (v1). Horizontal scaling would move this to the
-    edge (Render/Cloudflare) - documented in docs/tradeoffs.md.
+    Authenticated callers are keyed by their *verified* token subject so they never share
+    a bucket with anonymous traffic arriving through the web proxy; an unverifiable token
+    falls back to the IP key (and is rejected by the auth layer anyway).
+
+    Per-instance state: with several API instances, enforce anonymous limits at the edge
+    as well (docs/runbook.md).
     """
 
-    def __init__(self, app: ASGIApp, *, per_minute: int, trusted_proxy_count: int) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        per_minute: int,
+        trusted_proxy_count: int,
+        identify: Callable[[str], str | None] | None = None,
+    ) -> None:
         self.app = app
         self.capacity = float(per_minute)
         self.refill_per_second = per_minute / 60.0
         self.trusted_proxy_count = trusted_proxy_count
+        self.identify = identify
         self._buckets: OrderedDict[str, _Bucket] = OrderedDict()
+
+    def _key(self, scope: Scope) -> str:
+        if self.identify is not None:
+            header = Headers(scope=scope).get("authorization", "")
+            scheme, _, token = header.partition(" ")
+            if scheme.lower() == "bearer" and token:
+                subject = self.identify(token.strip())
+                if subject:
+                    return f"sub:{subject}"
+        return f"ip:{self._client_ip(scope)}"
 
     def _client_ip(self, scope: Scope) -> str:
         if self.trusted_proxy_count:
@@ -192,7 +215,7 @@ class RateLimitMiddleware:
         if scope["type"] != "http" or scope["path"].startswith(RATE_LIMIT_EXEMPT_PREFIXES):
             await self.app(scope, receive, send)
             return
-        allowed, retry_after = self._allow(self._client_ip(scope))
+        allowed, retry_after = self._allow(self._key(scope))
         if not allowed:
             response = problem_response(
                 429,

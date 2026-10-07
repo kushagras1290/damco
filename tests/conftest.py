@@ -23,12 +23,13 @@ from jobpulse_core.domain.models import (
     Seniority,
 )
 from jobpulse_core.ingestion.normalize import normalize_job
+from tests.auth_helpers import JWKS_JSON
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 # Settings are validated at import time by some modules; provide safe test defaults.
 os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://jobpulse:jobpulse@localhost:5432/jobpulse_test")
-os.environ.setdefault("API_JWT_SECRET", "test-secret-test-secret-test-secret-0123")
+os.environ.setdefault("API_JWT_JWKS", JWKS_JSON)
 os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.setdefault("LOG_JSON", "false")
 

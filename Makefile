@@ -18,6 +18,9 @@ down: ## Stop the stack
 seed: ## Seed demo profile + sources (stack must be running)
 	docker compose exec api python -m jobpulse.seed /app/seed.yaml
 
+keys: ## Generate an Ed25519 key pair for web -> API tokens (prints env lines)
+	uv run python -m jobpulse.keys
+
 migrate: ## Apply database migrations
 	uv run alembic upgrade head
 
@@ -45,4 +48,4 @@ audit: ## Dependency vulnerability scans
 
 check: lint typecheck test ## Everything CI runs before merge
 
-.PHONY: help install up down seed migrate lint typecheck test e2e audit check
+.PHONY: help install up down seed keys migrate lint typecheck test e2e audit check

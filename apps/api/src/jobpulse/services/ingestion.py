@@ -18,7 +18,13 @@ import structlog
 from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
-from jobpulse.core.metrics import JOBS_DISCOVERED, SOURCE_FAILURES, SOURCE_FETCH_DURATION
+from jobpulse.core.metrics import (
+    JOBS_DISCOVERED,
+    SOURCE_FAILURES,
+    SOURCE_FETCH_DURATION,
+    SOURCE_PAYLOAD_NEAR_LIMIT,
+    SUSPICIOUS_LISTINGS,
+)
 from jobpulse.db.models import Source
 from jobpulse.db.session import transaction
 from jobpulse.repositories.jobs import JobRepository
@@ -40,6 +46,11 @@ from jobpulse_core.sources import build_source, required_hosts
 logger = structlog.get_logger(__name__)
 
 _RAW_LIST = TypeAdapter(list[RawJob])
+# Skip closing when a listing loses more than half its open jobs at once (min 10 open).
+SHRINK_GUARD_MIN_OPEN = 10
+SHRINK_GUARD_MAX_DROP = 0.5
+# Warn well before a growing board hits OUTBOUND_MAX_RESPONSE_BYTES (a hard, non-retryable failure).
+PAYLOAD_WARN_RATIO = 0.75
 
 
 class StagedJob(NormalizedJob):
@@ -139,23 +150,12 @@ class IngestionService:
         body = _RAW_LIST.dump_json(result.jobs)
         key = f"staging/{safe_segment(source_id)}/{sha256_hex(body)[:32]}/raw.json"
         await self._ctx.store.put(key, body, "application/json")
+        limit = self._ctx.settings.outbound_max_response_bytes
+        if len(result.raw_payload) > limit * PAYLOAD_WARN_RATIO:
+            SOURCE_PAYLOAD_NEAR_LIMIT.labels(source_kind=kind).inc()
+            log.warning("source.payload_near_limit", bytes=len(result.raw_payload), limit=limit)
         if result.raw_payload:
-            now = datetime.now(tz=UTC)
-            page_key = (
-                f"pages/{safe_segment(definition.company_domain)}/{safe_segment(source_id)}/"
-                f"{_timestamp(now)}.{'json' if 'json' in result.content_type else 'html'}"
-            )
-            await self._ctx.store.put(page_key, result.raw_payload, result.content_type)
-            async with transaction(self._ctx.sessions) as session:
-                await JobRepository(session).add_snapshot(
-                    source_id=uuid.UUID(source_id),
-                    job_id=None,
-                    key=page_key,
-                    snapshot_hash=sha256_hex(result.raw_payload),
-                    content_type=result.content_type,
-                    size_bytes=len(result.raw_payload),
-                    fetched_at=now,
-                )
+            await self._store_page_snapshot(source_id, definition, result.raw_payload, result.content_type)
         async with transaction(self._ctx.sessions) as session:
             await SourceRepository(session).save_checkpoint(uuid.UUID(source_id), result.checkpoint)
 
@@ -172,6 +172,28 @@ class IngestionService:
             fetch_ms=result.fetch_ms,
             skipped_reason=result.skipped[0]["reason"] if result.skipped else None,
         )
+
+    async def _store_page_snapshot(
+        self, source_id: str, definition: SourceDefinition, payload: bytes, content_type: str
+    ) -> None:
+        """Content-addressed: an unchanged listing (most polls) is stored exactly once."""
+        digest = sha256_hex(payload)
+        extension = "json" if "json" in content_type else "html"
+        page_key = f"pages/{safe_segment(definition.company_domain)}/{safe_segment(source_id)}/{digest}.{extension}"
+        async with transaction(self._ctx.sessions) as session:
+            if await JobRepository(session).snapshot_exists(page_key):
+                return
+        await self._ctx.store.put(page_key, payload, content_type)
+        async with transaction(self._ctx.sessions) as session:
+            await JobRepository(session).add_snapshot(
+                source_id=uuid.UUID(source_id),
+                job_id=None,
+                key=page_key,
+                snapshot_hash=digest,
+                content_type=content_type,
+                size_bytes=len(payload),
+                fetched_at=datetime.now(tz=UTC),
+            )
 
     # ------------------------------------------------------------------ normalize
 
@@ -212,13 +234,16 @@ class IngestionService:
                 raise SourceUnavailableError("source vanished during discovery", context={"source_id": source_id})
             kind = source.kind
             seen: list[str] = []
+            known_hashes = await jobs.content_hashes(sid)  # one query instead of one per job
 
             for item in staged:
                 seen.append(item.external_id)
-                existing = await jobs.get_by_external(sid, item.external_id)
-                if existing is not None and existing.content_hash == item.content_hash:
+                if known_hashes.get(item.external_id) == item.content_hash:
                     unchanged += 1
                     continue
+                existing = (
+                    await jobs.get_by_external(sid, item.external_id) if item.external_id in known_hashes else None
+                )
 
                 company = await sources.upsert_company(name=item.company_name, domain=item.company_domain)
                 snapshot_bytes = canonical_json(item.raw_payload).encode("utf-8")
@@ -262,7 +287,7 @@ class IngestionService:
                     hashes[str(row.id)] = row.content_hash
 
             await jobs.touch_seen(sid, seen, now)
-            closed = await jobs.close_missing(sid, seen, now) if seen else 0
+            closed = await self._close_missing_guarded(jobs, sid, seen, now, source_id)
 
         if new:
             JOBS_DISCOVERED.labels(source_kind=kind).inc(new)
@@ -285,6 +310,24 @@ class IngestionService:
             jobs_to_evaluate=to_evaluate,
             content_hashes=hashes,
         )
+
+    @staticmethod
+    async def _close_missing_guarded(
+        jobs: JobRepository, sid: uuid.UUID, seen: list[str], now: datetime, source_id: str
+    ) -> int:
+        """Close jobs absent from the listing - unless the listing shrank suspiciously.
+
+        A transient upstream glitch (empty or truncated board) must not mass-close jobs;
+        genuinely removed jobs are closed on the next healthy poll.
+        """
+        open_before = await jobs.open_count(sid)
+        if open_before >= SHRINK_GUARD_MIN_OPEN and len(seen) < open_before * (1 - SHRINK_GUARD_MAX_DROP):
+            SUSPICIOUS_LISTINGS.labels(reason="shrink").inc()
+            logger.warning(
+                "source.listing_shrink_suspected", source_id=source_id, open_before=open_before, seen=len(seen)
+            )
+            return 0
+        return await jobs.close_missing(sid, seen, now) if seen else 0
 
     # ------------------------------------------------------------------ poll bookkeeping
 

@@ -15,10 +15,8 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Build-time placeholders only; real secrets are injected at runtime and never baked in.
-RUN API_JWT_SECRET=build-placeholder-not-a-secret-000000000 \
-    AUTH_SECRET=build-placeholder-not-a-secret-000000000 \
-    pnpm build
+# No secrets at build time: all configuration is read and validated at request time.
+RUN pnpm build
 
 FROM node:${NODE_VERSION}-trixie-slim AS runtime
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0

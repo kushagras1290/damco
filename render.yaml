@@ -16,8 +16,12 @@ services:
       - { key: ENVIRONMENT, value: production }
       - { key: STORAGE_BACKEND, value: r2 }
       - { key: TEMPORAL_TLS, value: "true" }
+      # Render terminates TLS in one proxy hop (and injects PORT, honoured by jobpulse.serve).
+      - { key: TRUSTED_PROXY_COUNT, value: "1" }
+      - { key: FORWARDED_ALLOW_IPS, value: "*" }
       - { key: DATABASE_URL, sync: false }
-      - { key: API_JWT_SECRET, sync: false }
+      - { key: API_JWT_JWKS, sync: false }
+      - { key: OWNER_GITHUB_IDS, sync: false }
       - { key: CORS_ALLOWED_ORIGINS, sync: false }
       - { key: TEMPORAL_ADDRESS, sync: false }
       - { key: TEMPORAL_NAMESPACE, sync: false }
@@ -41,7 +45,8 @@ services:
       - { key: STORAGE_BACKEND, value: r2 }
       - { key: TEMPORAL_TLS, value: "true" }
       - { key: DATABASE_URL, sync: false }
-      - { key: API_JWT_SECRET, sync: false }
+      - { key: API_JWT_JWKS, sync: false }
+      - { key: OWNER_GITHUB_IDS, sync: false }
       - { key: TEMPORAL_ADDRESS, sync: false }
       - { key: TEMPORAL_NAMESPACE, sync: false }
       - { key: TEMPORAL_API_KEY, sync: false }

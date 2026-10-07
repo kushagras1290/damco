@@ -23,7 +23,12 @@ EMBEDDING_FIELDS = frozenset({"target_roles", "skills", "years_experience", "sen
 
 @router.get("/me", response_model=Me)
 async def me(principal: Reader) -> Me:
-    return Me(subject=principal.subject, role=principal.role.value, authenticated=principal.authenticated)
+    return Me(
+        subject=principal.subject,
+        login=principal.login,
+        role=principal.role.value,
+        authenticated=principal.authenticated,
+    )
 
 
 @router.get("/profile", response_model=ProfileOut)

@@ -53,11 +53,12 @@ FROM runtime AS api
 COPY --chown=jobpulse:jobpulse alembic.ini ./alembic.ini
 COPY --chown=jobpulse:jobpulse migrations ./migrations
 COPY --chown=jobpulse:jobpulse seed.yaml ./seed.yaml
+ENV PORT=8000
 EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
-  CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2).status == 200 else 1)"]
-CMD ["uvicorn", "jobpulse.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", \
-     "--proxy-headers", "--forwarded-allow-ips", "*", "--no-server-header", "--timeout-graceful-shutdown", "20"]
+  CMD ["python", "-c", "import os,sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT', '8000') + '/health/live', timeout=2).status == 200 else 1)"]
+# jobpulse.serve validates config before binding and honours the platform's $PORT.
+CMD ["python", "-m", "jobpulse.serve"]
 
 # ---------------------------------------------------------------- worker
 FROM runtime AS worker

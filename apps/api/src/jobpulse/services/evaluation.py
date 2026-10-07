@@ -11,6 +11,7 @@ import time
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import structlog
 
@@ -18,6 +19,7 @@ from jobpulse.core.metrics import (
     JOB_PROCESSING_DURATION,
     JOBS_MATCHED,
     JOBS_REJECTED,
+    LLM_BUDGET_EXHAUSTED,
     LLM_COST_USD,
     LLM_REQUESTS,
     NOTIFICATIONS_SENT,
@@ -180,6 +182,12 @@ class EvaluationService:
             intel = JobIntelligence.model_validate(cached.data)
             model = cached.model
         else:
+            exhausted = await self._llm_budget_exhausted()
+            if exhausted is not None:
+                # Degrade, never block: deterministic eligibility already stands.
+                LLM_BUDGET_EXHAUSTED.labels(limit=exhausted).inc()
+                logger.warning("intelligence.budget_exhausted", job_id=ref.job_id, limit=exhausted)
+                return StageResult(job_id=ref.job_id, proceed=True, eligible=True, detail=f"llm {exhausted} reached")
             try:
                 outcome = await intelligence.extract(job, deterministic.unresolved)
             except IntelligenceError as exc:
@@ -239,6 +247,18 @@ class EvaluationService:
             eligible=merged.eligible,
         )
         return StageResult(job_id=ref.job_id, proceed=merged.eligible, eligible=merged.eligible, detail=model)
+
+    async def _llm_budget_exhausted(self) -> str | None:
+        """Name of the daily limit that is exhausted, or None if spending is allowed."""
+        settings = self._ctx.settings
+        start_of_day = datetime.now(tz=UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        async with transaction(self._ctx.sessions) as session:
+            count, cost = await DecisionRepository(session).intelligence_usage_since(start_of_day)
+        if count >= settings.openai_daily_request_limit:
+            return "daily request limit"
+        if settings.openai_daily_budget_usd is not None and cost >= Decimal(str(settings.openai_daily_budget_usd)):
+            return "daily budget"
+        return None
 
     # ------------------------------------------------------------------ 3. embeddings
 

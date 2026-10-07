@@ -53,6 +53,19 @@ class JobRepository:
         )
         return (await self._session.execute(statement)).unique().scalar_one_or_none()
 
+    async def content_hashes(self, source_id: uuid.UUID) -> dict[str, str]:
+        """external_id -> content_hash for every job of a source, in one query."""
+        statement = select(Job.external_id, Job.content_hash).where(Job.source_id == source_id)
+        return {row[0]: row[1] for row in (await self._session.execute(statement)).all()}
+
+    async def open_count(self, source_id: uuid.UUID) -> int:
+        statement = select(func.count(Job.id)).where(Job.source_id == source_id, Job.closed_at.is_(None))
+        return int((await self._session.execute(statement)).scalar_one())
+
+    async def snapshot_exists(self, key: str) -> bool:
+        statement = select(RawSnapshot.id).where(RawSnapshot.snapshot_key == key).limit(1)
+        return (await self._session.execute(statement)).first() is not None
+
     async def get_by_external(self, source_id: uuid.UUID, external_id: str) -> Job | None:
         statement = select(Job).where(Job.source_id == source_id, Job.external_id == external_id)
         return (await self._session.execute(statement)).scalar_one_or_none()

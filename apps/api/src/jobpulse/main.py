@@ -17,9 +17,10 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from jobpulse.api.routes import applications, decisions, jobs, profile, runs, sources, system
 from jobpulse.core.config import Settings, get_settings
-from jobpulse.core.errors import install_exception_handlers
+from jobpulse.core.errors import AuthenticationError, install_exception_handlers
 from jobpulse.core.logging import configure_logging
 from jobpulse.core.middleware import BodySizeLimitMiddleware, RateLimitMiddleware, RequestContextMiddleware
+from jobpulse.core.security import decode_token
 from jobpulse.core.telemetry import configure_tracing
 from jobpulse.services.context import AppContext
 
@@ -77,10 +78,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Middleware executes outermost-last-added: context -> CORS -> rate limit -> body limit -> app.
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes)
+
+    def identify(token: str) -> str | None:
+        try:
+            return decode_token(token, settings).subject
+        except AuthenticationError:
+            return None
+
     app.add_middleware(
         RateLimitMiddleware,
         per_minute=settings.rate_limit_per_minute,
         trusted_proxy_count=settings.trusted_proxy_count,
+        identify=identify,
     )
     app.add_middleware(
         CORSMiddleware,

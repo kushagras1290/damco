@@ -201,3 +201,51 @@ async def test_seed_is_idempotent(ctx: AppContext) -> None:
     async with transaction(ctx.sessions) as session:
         profile = await ProfileRepository(session).get_or_create_primary()
     assert "Python" in profile.skills
+
+
+async def test_unchanged_listing_snapshot_is_stored_once(ctx: AppContext) -> None:
+    source_id = await create_source(ctx)
+    board = load_fixture("greenhouse/board.json")
+    await discover(ctx, source_id, board)
+    await discover(ctx, source_id, board)  # identical payload (no ETag support upstream)
+    async with transaction(ctx.sessions) as session:
+        pages = (
+            await session.execute(select(func.count(RawSnapshot.id)).where(RawSnapshot.job_id.is_(None)))
+        ).scalar_one()
+    assert pages == 1
+
+
+async def test_suspicious_shrink_does_not_mass_close(ctx: AppContext) -> None:
+    source_id = await create_source(ctx)
+    base = load_fixture("greenhouse/board.json")["jobs"][0]
+    many = {"jobs": [{**base, "id": 5_000_000 + i, "title": f"Engineer {i}"} for i in range(20)]}
+    await discover(ctx, source_id, many)
+    truncated = {"jobs": many["jobs"][:3]}  # upstream glitch: 85% of the board missing
+    outcome = await discover(ctx, source_id, truncated)
+    assert outcome.closed_jobs == 0
+    async with transaction(ctx.sessions) as session:
+        assert await JobRepository(session).open_count(uuid.UUID(source_id)) == 20
+
+
+async def test_llm_daily_limit_degrades_enrichment(ctx: AppContext) -> None:
+    source_id = await create_source(ctx)
+    stored = await discover(ctx, source_id, load_fixture("greenhouse/board.json"))
+    job_id = stored.jobs_to_evaluate[0]
+    ref = JobRef(job_id=job_id, content_hash=stored.content_hashes[job_id])
+
+    class ExplodingIntelligence:
+        """Any call would mean the budget guard failed."""
+
+        async def extract(self, *_: object, **__: object) -> None:
+            raise AssertionError("LLM must not be called once the daily limit is reached")
+
+        async def aclose(self) -> None:
+            return None
+
+    ctx.intelligence = ExplodingIntelligence()  # type: ignore[assignment]
+    ctx.settings = ctx.settings.model_copy(update={"openai_daily_request_limit": 0})
+    service = EvaluationService(ctx)
+    await service.eligibility(ref, "wf")
+    result = await service.enrich(ref, "wf")
+    assert result.proceed
+    assert result.detail == "llm daily request limit reached"

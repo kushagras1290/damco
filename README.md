@@ -34,7 +34,8 @@ PostgreSQL 18 (pgvector · pg_trgm · FTS)  ──►  FastAPI  ──►  Next.
 Requirements: Docker, [uv](https://docs.astral.sh/uv/) ≥ 0.12, Node 24 + pnpm.
 
 ```bash
-cp .env.example .env            # set API_JWT_SECRET and AUTH_SECRET (≥ 32 chars)
+cp .env.example .env            # set AUTH_SECRET (≥ 32 chars)
+make keys                       # paste API_JWT_PRIVATE_JWK + API_JWT_JWKS into .env
 docker compose up --build -d    # Postgres, Temporal (+UI), migrations, API, worker, web
 make seed                       # demo profile + three public job boards
 ```
@@ -44,7 +45,9 @@ make seed                       # demo profile + three public job boards
 - Temporal UI → http://localhost:8233
 
 **Owner access:** create a GitHub OAuth app (callback `http://localhost:3000/api/auth/callback/github`),
-set `AUTH_GITHUB_ID`, `AUTH_GITHUB_SECRET` and `OWNER_GITHUB_LOGINS=<your-login>`.
+set `AUTH_GITHUB_ID`, `AUTH_GITHUB_SECRET` and `OWNER_GITHUB_IDS=<your numeric GitHub id>`
+(`gh api users/<login> --jq .id`). Only allowlisted owners can sign in; everyone else uses the
+read-only public demo without an account.
 
 **AI enrichment** is optional. Without `OPENAI_API_KEY`, JobPulse runs in deterministic-only
 mode: hard rules and keyword skill matching still work; unknown rules remain flagged for review.
@@ -66,7 +69,9 @@ Versioned REST under `/api/v1`: `jobs`, `jobs/{id}` (full decision trace), `jobs
 `jobs/{id}/evaluate`, `jobs/{id}/applications`, `sources` (+ `PATCH`, `/sync`), `runs`, `profile`,
 `applications`, `decisions`, `dashboard`, `system`, `me`. Probes: `/health/live`, `/health/ready`, `/metrics`.
 
-Writes require the `OWNER` role (JWT minted server-side by the web app). Anonymous callers are
+Writes require the `OWNER` role. The web app mints short-lived Ed25519 tokens server-side; the API
+verifies them with public keys only and decides the role itself from `OWNER_GITHUB_IDS`
+([ADR 0006](docs/adr/0006-authentication-and-authorization.md)). Anonymous callers are
 `PUBLIC_DEMO` (read-only). Errors are RFC 9457 `application/problem+json`.
 
 ## How a decision is made
@@ -85,7 +90,7 @@ Writes require the `OWNER` role (JWT minted server-side by the web app). Anonymo
 `.github/workflows/deploy.yml` runs after a green CI on `main` only when the repository
 variable `DEPLOY_ENABLED=true` is set. Before enabling it, provision Neon, Temporal Cloud,
 Cloudflare R2, Render (`render.yaml`) and Vercel, then add the `production` environment
-secrets: `DATABASE_URL`, `API_JWT_SECRET`, `RENDER_API_KEY`, `RENDER_API_SERVICE_ID`,
+secrets: `DATABASE_URL`, `RENDER_API_KEY`, `RENDER_API_SERVICE_ID`,
 `RENDER_WORKER_SERVICE_ID`, `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, and the
 variables `PRODUCTION_API_URL` / `PRODUCTION_WEB_URL` for smoke tests.
 
@@ -93,6 +98,7 @@ variables `PRODUCTION_API_URL` / `PRODUCTION_WEB_URL` for smoke tests.
 
 - [Architecture](docs/architecture/overview.md)
 - [ADRs](docs/adr/)
+- [Production runbook](docs/runbook.md)
 - [Security](docs/security.md)
 - [Failure modes](docs/failure-modes.md)
 - [Trade-offs](docs/tradeoffs.md)

@@ -162,6 +162,14 @@ class DecisionRepository:
         )
         await self._session.execute(statement)
 
+    async def intelligence_usage_since(self, since: datetime) -> tuple[int, Decimal]:
+        """(extractions, USD cost) recorded since ``since`` - drives the daily spend guard."""
+        statement = select(
+            func.count(JobIntelligenceRecord.id), func.coalesce(func.sum(JobIntelligenceRecord.cost_usd), 0)
+        ).where(JobIntelligenceRecord.created_at >= since)
+        count, cost = (await self._session.execute(statement)).one()
+        return int(count), Decimal(cost)
+
     async def total_llm_cost(self) -> Decimal:
         statement = select(func.coalesce(func.sum(JobIntelligenceRecord.cost_usd), 0))
         return Decimal((await self._session.execute(statement)).scalar_one())

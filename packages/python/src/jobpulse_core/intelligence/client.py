@@ -141,6 +141,9 @@ class IntelligenceService:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        await self.aclose()
+
+    async def aclose(self) -> None:
         await self._client.close()
 
     @property

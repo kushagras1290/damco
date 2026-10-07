@@ -8,21 +8,18 @@ import subprocess
 import sys
 import time
 from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
-import jwt
 import pytest
 from sqlalchemy import text
 
 from jobpulse.core.config import Settings
 from jobpulse.services.context import AppContext
 from jobpulse_core.ingestion.http import HttpClientConfig, SafeHttpClient
+from tests.auth_helpers import JWKS_JSON, OWNER_ID
 
 ROOT = Path(__file__).resolve().parents[2]
 PG_IMAGE = "pgvector/pgvector:pg18"
-JWT_SECRET = "integration-secret-integration-secret-01"
 TRUNCATE = (
     "TRUNCATE audit_events, applications, notifications, match_scores, job_intelligence, "
     "eligibility_decisions, job_versions, raw_snapshots, workflow_runs, jobs, source_checkpoints, "
@@ -49,7 +46,7 @@ def database_url() -> Iterator[str]:
         return
     if not _docker_available():
         pytest.skip("Docker not available for Testcontainers")
-    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415 - optional heavy import
+    from testcontainers.community.postgres import PostgresContainer  # noqa: PLC0415 - optional heavy import
 
     with PostgresContainer(
         PG_IMAGE, username="jobpulse", password="jobpulse", dbname="jobpulse", driver="psycopg"
@@ -80,7 +77,8 @@ def migrated(database_url: str) -> str:
 def settings(migrated: str, tmp_path: Path) -> Settings:
     return Settings(
         database_url=migrated,  # type: ignore[arg-type]
-        api_jwt_secret=JWT_SECRET,  # type: ignore[arg-type]
+        api_jwt_jwks=JWKS_JSON,
+        owner_github_ids=[OWNER_ID],
         environment="test",
         local_storage_path=tmp_path / "snapshots",
         log_json=False,
@@ -115,17 +113,3 @@ async def ctx(settings: Settings) -> AsyncIterator[AppContext]:
         yield context
     finally:
         await context.aclose()
-
-
-def make_token(role: str = "OWNER", subject: str = "octocat", *, secret: str = JWT_SECRET, **overrides: Any) -> str:
-    now = datetime.now(tz=UTC)
-    claims: dict[str, Any] = {
-        "sub": subject,
-        "role": role,
-        "iss": "jobpulse-web",
-        "aud": "jobpulse-api",
-        "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(minutes=5)).timestamp()),
-    }
-    claims.update(overrides)
-    return jwt.encode(claims, secret, algorithm="HS256")

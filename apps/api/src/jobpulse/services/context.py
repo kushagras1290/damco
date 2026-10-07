@@ -74,5 +74,5 @@ class AppContext:
     async def aclose(self) -> None:
         await self.notify_http.aclose()
         if self.intelligence is not None:
-            await self.intelligence.__aexit__(None, None, None)
+            await self.intelligence.aclose()
         await self.engine.dispose()

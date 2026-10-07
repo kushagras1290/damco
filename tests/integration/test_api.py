@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
 import httpx
@@ -13,8 +16,8 @@ from jobpulse.api.deps import get_ctx, get_temporal
 from jobpulse.core.config import Settings
 from jobpulse.main import create_app
 from jobpulse.services.context import AppContext
+from tests.auth_helpers import OWNER_ID, SIGNING_KEY, VISITOR_ID, make_token, other_signing_key
 from tests.conftest import load_fixture
-from tests.integration.conftest import make_token
 from tests.integration.test_pipeline import create_source, discover
 
 pytestmark = pytest.mark.integration
@@ -56,8 +59,8 @@ async def api(settings: Settings, ctx: AppContext, temporal: FakeTemporal) -> As
             yield client
 
 
-OWNER = {"Authorization": f"Bearer {make_token('OWNER')}"}
-DEMO = {"Authorization": f"Bearer {make_token('PUBLIC_DEMO', subject='visitor')}"}
+OWNER = {"Authorization": f"Bearer {make_token(OWNER_ID)}"}
+DEMO = {"Authorization": f"Bearer {make_token(VISITOR_ID, login='visitor')}"}
 
 
 async def test_health_and_metrics(api: httpx.AsyncClient) -> None:
@@ -91,14 +94,35 @@ async def test_public_demo_is_read_only(api: httpx.AsyncClient) -> None:
     assert demo.headers["content-type"].startswith("application/problem+json")
 
 
+def _unsigned_alg_none_token() -> str:
+    """Classic `alg: none` forgery, built at runtime (a literal JWT would trip secret scanners)."""
+
+    def b64(data: dict[str, str]) -> str:
+        return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
+
+    return f"{b64({'alg': 'none', 'kid': 'test-kid'})}.{b64({'sub': f'github:{OWNER_ID}'})}."
+
+
+def _hs256_with_public_key() -> str:
+    """Classic alg-confusion attempt: HMAC-sign using the *public* key bytes as secret."""
+    public_raw = SIGNING_KEY.public_key().public_bytes_raw()
+    return make_token(OWNER_ID, key=public_raw, algorithm="HS256")
+
+
 @pytest.mark.parametrize(
     "token",
     [
-        make_token("OWNER", secret="wrong-secret-wrong-secret-wrong-secret-0"),
-        make_token("OWNER", exp=1),
-        make_token("OWNER", aud="someone-else"),
-        make_token("ADMIN"),
-        "not-a-jwt",
+        pytest.param(make_token(OWNER_ID, key=other_signing_key()), id="wrong-key"),
+        pytest.param(make_token(OWNER_ID, kid="unknown-kid"), id="unknown-kid"),
+        pytest.param(_hs256_with_public_key(), id="alg-confusion-hs256"),
+        pytest.param(make_token(OWNER_ID, exp=1, iat=0, nbf=0), id="expired"),
+        pytest.param(make_token(OWNER_ID, aud="someone-else"), id="wrong-audience"),
+        pytest.param(make_token(OWNER_ID, iss="evil"), id="wrong-issuer"),
+        pytest.param(make_token(OWNER_ID, lifetime=timedelta(hours=8)), id="lifetime-too-long"),
+        pytest.param(make_token(OWNER_ID, sub="octocat"), id="login-as-subject"),
+        pytest.param(make_token(OWNER_ID, jti=None), id="missing-jti"),
+        pytest.param(_unsigned_alg_none_token(), id="alg-none"),
+        pytest.param("not-a-jwt", id="garbage"),
     ],
 )
 async def test_invalid_tokens_rejected(api: httpx.AsyncClient, token: str) -> None:
@@ -107,9 +131,27 @@ async def test_invalid_tokens_rejected(api: httpx.AsyncClient, token: str) -> No
     assert response.headers["www-authenticate"] == "Bearer"
 
 
+async def test_role_is_decided_by_api_not_by_token_claims(api: httpx.AsyncClient) -> None:
+    forged = {"Authorization": f"Bearer {make_token(VISITOR_ID, login='visitor', role='OWNER')}"}
+    me = (await api.get("/api/v1/me", headers=forged)).json()
+    assert me["role"] == "PUBLIC_DEMO"
+    body = {"kind": "lever", "name": "x", "company_name": "X", "company_domain": "x.io", "board_token": "x"}
+    assert (await api.post("/api/v1/sources", json=body, headers=forged)).status_code == 403
+
+
+async def test_owner_login_rename_does_not_change_authorization(api: httpx.AsyncClient) -> None:
+    # Owner identity is the immutable numeric id; a different account using the
+    # owner's former login gains nothing.
+    squatter = {"Authorization": f"Bearer {make_token(VISITOR_ID, login='octocat')}"}
+    renamed_owner = {"Authorization": f"Bearer {make_token(OWNER_ID, login='new-name')}"}
+    assert (await api.get("/api/v1/me", headers=squatter)).json()["role"] == "PUBLIC_DEMO"
+    assert (await api.get("/api/v1/me", headers=renamed_owner)).json()["role"] == "OWNER"
+
+
 async def test_me(api: httpx.AsyncClient) -> None:
     assert (await api.get("/api/v1/me", headers=OWNER)).json() == {
-        "subject": "octocat",
+        "subject": f"github:{OWNER_ID}",
+        "login": "octocat",
         "role": "OWNER",
         "authenticated": True,
     }
@@ -236,3 +278,18 @@ async def test_body_size_limit(api: httpx.AsyncClient) -> None:
         "/api/v1/profile", content=b"x" * (300 * 1024), headers={**OWNER, "content-type": "application/json"}
     )
     assert response.status_code == 413
+
+
+async def test_rate_limit_is_keyed_by_verified_identity(settings: Settings, ctx: AppContext) -> None:
+    app = create_app(settings.model_copy(update={"rate_limit_per_minute": 2}))
+    app.dependency_overrides[get_ctx] = lambda: ctx
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            anonymous = [(await client.get("/api/v1/me")).status_code for _ in range(3)]
+            owner = [(await client.get("/api/v1/me", headers=OWNER)).status_code for _ in range(2)]
+            forged = make_token(OWNER_ID, key=other_signing_key())
+            bad = (await client.get("/api/v1/me", headers={"Authorization": f"Bearer {forged}"})).status_code
+    assert anonymous == [200, 200, 429]
+    assert owner == [200, 200]  # separate bucket from anonymous traffic on the same IP
+    assert bad == 429  # unverifiable token falls back to the (exhausted) IP bucket

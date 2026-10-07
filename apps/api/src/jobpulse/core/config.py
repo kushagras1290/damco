@@ -12,13 +12,13 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, PostgresDsn, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from jobpulse.core.jwks import validate_jwks
 from jobpulse_core.ingestion.http import HttpClientConfig
 from jobpulse_core.intelligence import IntelligenceConfig
 from jobpulse_core.sources.ats import ATS_HOST_ALLOWLIST
 
 # Must match the vector(N) columns created by the initial migration.
 EMBEDDING_DIMENSIONS = 1536
-MIN_SECRET_LENGTH = 32
 RESEND_HOST = "api.resend.com"
 
 Environment = Literal["local", "test", "staging", "production"]
@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     db_max_overflow: Annotated[int, Field(ge=0, le=100)] = 10
     db_pool_timeout_seconds: Annotated[float, Field(gt=0, le=60)] = 10.0
     db_statement_timeout_ms: Annotated[int, Field(ge=100, le=600_000)] = 15_000
+    # PgBouncer in transaction mode (e.g. Neon's "-pooler" endpoint) cannot use server-side
+    # prepared statements. None = auto-detect from the host name.
+    db_prepared_statements: bool | None = None
 
     # --- temporal ---------------------------------------------------------------
     temporal_address: str = "localhost:7233"
@@ -60,16 +63,27 @@ class Settings(BaseSettings):
     temporal_connect_timeout_seconds: Annotated[float, Field(gt=0, le=60)] = 10.0
 
     # --- auth -------------------------------------------------------------------
-    api_jwt_secret: SecretStr
+    # Public Ed25519 keys (JWK Set JSON) that verify web-minted tokens. Generate with
+    # `python -m jobpulse.keys`. The private key lives only in the web app.
+    api_jwt_jwks: str
     api_jwt_audience: str = "jobpulse-api"
     api_jwt_issuer: str = "jobpulse-web"
     public_demo_enabled: bool = True
+    # Immutable numeric GitHub user IDs granted OWNER. Logins are mutable and can be
+    # re-registered after a rename, so they are never used for authorization.
+    owner_github_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)
 
     # --- http hardening ---------------------------------------------------------
     cors_allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3000"])
     max_request_bytes: Annotated[int, Field(ge=1024, le=10 * 1024 * 1024)] = 256 * 1024
     rate_limit_per_minute: Annotated[int, Field(ge=1, le=100_000)] = 120
-    trusted_proxy_count: Annotated[int, Field(ge=0, le=5)] = 1
+    # Number of reverse proxies in front of the API that append to X-Forwarded-For.
+    # 0 (default) = trust no forwarding headers (safe when exposed directly).
+    trusted_proxy_count: Annotated[int, Field(ge=0, le=5)] = 0
+    # Peers whose X-Forwarded-* headers uvicorn honours (platform proxy addresses).
+    forwarded_allow_ips: str = "127.0.0.1"
+    bind_host: str = "0.0.0.0"  # noqa: S104 - container port, fronted by the platform proxy
+    port: Annotated[int, Field(ge=1, le=65535)] = 8000
 
     # --- outbound fetching ------------------------------------------------------
     outbound_enforce_allowlist: bool = True
@@ -77,7 +91,7 @@ class Settings(BaseSettings):
     outbound_connect_timeout_seconds: Annotated[float, Field(gt=0, le=30)] = 5.0
     outbound_read_timeout_seconds: Annotated[float, Field(gt=0, le=120)] = 20.0
     outbound_total_timeout_seconds: Annotated[float, Field(gt=0, le=300)] = 30.0
-    outbound_max_response_bytes: Annotated[int, Field(ge=1024, le=50 * 1024 * 1024)] = 10 * 1024 * 1024
+    outbound_max_response_bytes: Annotated[int, Field(ge=1024, le=128 * 1024 * 1024)] = 32 * 1024 * 1024
     outbound_respect_robots_txt: bool = True
 
     # --- AI -------------------------------------------------------------------
@@ -91,6 +105,9 @@ class Settings(BaseSettings):
     openai_output_price_per_million: Annotated[float, Field(ge=0)] = 0.0
     openai_embedding_price_per_million: Annotated[float, Field(ge=0)] = 0.0
     embedding_dimensions: int = EMBEDDING_DIMENSIONS
+    # Spend guards (UTC day). Soft caps: concurrent activities may overshoot slightly.
+    openai_daily_request_limit: Annotated[int, Field(ge=0, le=1_000_000)] = 2000
+    openai_daily_budget_usd: Annotated[float | None, Field(gt=0)] = None
 
     # --- storage ----------------------------------------------------------------
     storage_backend: Literal["local", "r2"] = "local"
@@ -113,9 +130,15 @@ class Settings(BaseSettings):
     otel_exporter_otlp_endpoint: str | None = None
     metrics_enabled: bool = True
 
-    _split_origins = field_validator("cors_allowed_origins", "outbound_allowed_hosts", mode="before")(
-        _split_csv,
-    )
+    _split_origins = field_validator(
+        "cors_allowed_origins", "outbound_allowed_hosts", "owner_github_ids", mode="before"
+    )(_split_csv)
+
+    @field_validator("api_jwt_jwks")
+    @classmethod
+    def _valid_jwks(cls, value: str) -> str:
+        validate_jwks(value)  # fail fast on malformed keys or leaked private material
+        return value
 
     @field_validator("database_url")
     @classmethod
@@ -127,9 +150,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _cross_field(self) -> Self:
-        if len(self.api_jwt_secret.get_secret_value()) < MIN_SECRET_LENGTH:
-            msg = f"API_JWT_SECRET must be at least {MIN_SECRET_LENGTH} characters"
-            raise ValueError(msg)
         if self.embedding_dimensions != EMBEDDING_DIMENSIONS:
             msg = f"EMBEDDING_DIMENSIONS must equal {EMBEDDING_DIMENSIONS} (schema vector size)"
             raise ValueError(msg)
@@ -159,6 +179,13 @@ class Settings(BaseSettings):
     @property
     def sqlalchemy_url(self) -> str:
         return str(self.database_url)
+
+    @property
+    def use_prepared_statements(self) -> bool:
+        if self.db_prepared_statements is not None:
+            return self.db_prepared_statements
+        hosts = self.database_url.hosts()
+        return not any("-pooler" in (host.get("host") or "") for host in hosts)
 
     def http_client_config(
         self, *, extra_hosts: list[str] | None = None, robots: bool | None = None
