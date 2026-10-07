@@ -106,7 +106,7 @@ jobs:
       - name: Semgrep
         run: pipx run semgrep scan --config p/default --config p/python --config p/typescript --error --metrics off
       - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scanners: vuln,secret,misconfig
@@ -154,7 +154,7 @@ jobs:
           load: true
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
-      - uses: aquasecurity/trivy-action@0.33.1
+      - uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: jobpulse-${{ matrix.name }}:ci
           severity: HIGH,CRITICAL
