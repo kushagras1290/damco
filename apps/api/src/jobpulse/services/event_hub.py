@@ -19,6 +19,9 @@ from psycopg import sql
 
 from jobpulse.services.events import EVENT_CHANNEL
 
+# Composed once with identifier quoting (LISTEN cannot take a bind parameter).
+LISTEN_STATEMENT = sql.SQL("LISTEN {}").format(sql.Identifier(EVENT_CHANNEL))
+
 logger = structlog.get_logger(__name__)
 
 RECONNECT_INITIAL_SECONDS = 1.0
@@ -104,7 +107,9 @@ class EventHub:
                 async with await psycopg.AsyncConnection.connect(
                     dsn, autocommit=True, connect_timeout=CONNECT_TIMEOUT_SECONDS
                 ) as connection:
-                    await connection.execute(sql.SQL("LISTEN {}").format(sql.Identifier(EVENT_CHANNEL)))
+                    # Constant, identifier-quoted statement; no runtime input reaches it (Semgrep's
+                    # sqlalchemy-execute-raw-query rule flags every non-literal execute argument).
+                    await connection.execute(LISTEN_STATEMENT)  # nosemgrep
                     self._connected.set()
                     delay = RECONNECT_INITIAL_SECONDS
                     logger.info("events.listening", channel=EVENT_CHANNEL)
