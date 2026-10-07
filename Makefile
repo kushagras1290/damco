@@ -38,7 +38,9 @@ e2e: ## Playwright smoke tests against the running stack
 	cd $(WEB) && pnpm exec playwright test
 
 audit: ## Dependency vulnerability scans
-	uv run pip-audit
+	uv export --frozen --all-packages --no-emit-workspace --format requirements.txt -o .audit-requirements.txt
+	uv run pip-audit -r .audit-requirements.txt --disable-pip --strict
+	rm -f .audit-requirements.txt
 	cd $(WEB) && pnpm audit --prod
 
 check: lint typecheck test ## Everything CI runs before merge

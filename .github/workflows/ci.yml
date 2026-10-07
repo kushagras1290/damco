@@ -58,8 +58,10 @@ jobs:
           uv run alembic check
       - name: Tests (unit, contract, integration, workflow)
         run: uv run pytest --cov --cov-report=xml --cov-report=term
-      - name: pip-audit
-        run: uv run pip-audit --strict --progress-spinner off
+      - name: pip-audit (locked third-party dependencies)
+        run: |
+          uv export --frozen --all-packages --no-emit-workspace --format requirements.txt -o "$RUNNER_TEMP/requirements.txt"
+          uv run pip-audit -r "$RUNNER_TEMP/requirements.txt" --disable-pip --strict --progress-spinner off
 
   web:
     name: Web · lint, types, tests, build
