@@ -214,4 +214,4 @@ class TestPolling:
         assert decision.sleep_seconds > 0
 
     def test_ladder_matches_architecture_doc(self) -> None:
-        assert INTERVAL_LADDER_SECONDS == (300, 600, 900, 1800, 3600)
+        assert INTERVAL_LADDER_SECONDS == (60, 120, 300, 600, 900, 1800, 3600)

@@ -20,7 +20,7 @@ from jobpulse.repositories.activity import AuditRepository
 from jobpulse.repositories.sources import SourceRepository
 from jobpulse.services import temporal as temporal_service
 from jobpulse.services.temporal import WorkflowServiceError
-from jobpulse_core.domain.models import SourceDefinition
+from jobpulse_core.domain.models import SourceDefinition, SourceKind
 from jobpulse_core.errors import SourceFetchError, UnsafeUrlError, ValidationError
 from jobpulse_core.ingestion.http import SafeHttpClient
 from jobpulse_core.sources import required_hosts
@@ -43,6 +43,8 @@ async def _apply_polling(client: Client, settings: Settings, source_id: str, *, 
 
 
 async def _validate_definition(body: SourceCreate, ctx: Ctx) -> SourceDefinition:
+    if body.kind is SourceKind.DEMO and not ctx.settings.demo_mode:
+        raise ValidationError("demo sources are only available when DEMO_MODE is enabled")
     try:
         definition = SourceDefinition(
             kind=body.kind,

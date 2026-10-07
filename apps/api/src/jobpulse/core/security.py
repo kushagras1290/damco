@@ -29,6 +29,9 @@ JWT_LEEWAY_SECONDS = 30
 MAX_TOKEN_LENGTH = 4096
 MAX_TOKEN_LIFETIME_SECONDS = 15 * 60
 SUBJECT_RE = re.compile(r"^github:(?P<id>[1-9][0-9]{0,19})$")
+# Anonymous visitors: keyed hash of their IP, signed by the web tier. Read-only, but each
+# visitor gets their own rate-limit bucket instead of sharing the web server's IP.
+VISITOR_RE = re.compile(r"^visitor:[0-9a-f]{32}$")
 LOGIN_RE = re.compile(r"^[A-Za-z0-9-]{1,39}$")
 
 
@@ -85,7 +88,10 @@ def decode_token(token: str, settings: Settings) -> Principal:
 
     if int(claims["exp"]) - int(claims["iat"]) > MAX_TOKEN_LIFETIME_SECONDS:
         raise AuthenticationError("token lifetime too long")
-    match = SUBJECT_RE.fullmatch(str(claims["sub"]))
+    subject = str(claims["sub"])
+    if VISITOR_RE.fullmatch(subject):
+        return Principal(subject=subject, role=Role.PUBLIC_DEMO, authenticated=False)
+    match = SUBJECT_RE.fullmatch(subject)
     if match is None:
         raise AuthenticationError("invalid subject")
     github_id = int(match.group("id"))
@@ -106,6 +112,9 @@ async def current_principal(request: Request, ctx: Ctx) -> Principal:
     if scheme.lower() != "bearer" or not token:
         raise AuthenticationError("malformed authorization header")
     principal = decode_token(token.strip(), settings)
+    if not principal.authenticated and not settings.public_demo_enabled:
+        # Signed visitor tokens identify anonymous callers; they are not a login.
+        raise AuthenticationError("authentication required")
     request.state.principal = principal
     return principal
 

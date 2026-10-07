@@ -31,8 +31,8 @@ export function SourceForm({ onCreated }: { onCreated: () => void }) {
       company_domain: "",
       board_token: "",
       url: "",
-      poll_interval_seconds: 900,
-      min_poll_interval_seconds: 300,
+      poll_interval_seconds: 300,
+      min_poll_interval_seconds: 120,
       max_poll_interval_seconds: 3600,
     },
   });

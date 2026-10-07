@@ -30,6 +30,7 @@ from jobpulse.db.session import transaction
 from jobpulse.repositories.jobs import JobRepository
 from jobpulse.repositories.sources import SourceRepository
 from jobpulse.services.context import AppContext
+from jobpulse.services.events import EventType, publish
 from jobpulse.services.storage import safe_segment
 from jobpulse_core.contracts import (
     FetchOutcome,
@@ -38,7 +39,7 @@ from jobpulse_core.contracts import (
     SourceSchedule,
     StoreOutcome,
 )
-from jobpulse_core.domain.models import NormalizedJob, RawJob, SourceDefinition
+from jobpulse_core.domain.models import NormalizedJob, RawJob, SourceDefinition, SourceKind
 from jobpulse_core.errors import JobPulseError, SourceError, ValidationError
 from jobpulse_core.ingestion.normalize import canonical_json, normalize_job, sha256_hex
 from jobpulse_core.sources import build_source, required_hosts
@@ -118,8 +119,14 @@ class IngestionService:
             if source is None or not source.enabled:
                 raise SourceUnavailableError("source missing or disabled", context={"source_id": source_id})
             definition = _definition(source)
+            if definition.kind is SourceKind.DEMO and not self._ctx.settings.demo_mode:
+                raise SourceUnavailableError("demo source requires DEMO_MODE", context={"source_id": source_id})
             checkpoint = await repo.get_checkpoint(source.id)
             kind = source.kind
+            source_name = source.name
+            await publish(
+                session, EventType.SOURCE_PROGRESS, {"source_id": source_id, "source": source_name, "stage": "fetching"}
+            )
 
         log = logger.bind(source_id=source_id, source_kind=kind)
         started = time.perf_counter()
@@ -137,6 +144,9 @@ class IngestionService:
 
         if result.not_modified:
             log.info("source.not_modified")
+            await self._emit(
+                EventType.SOURCE_PROGRESS, {"source_id": source_id, "source": source_name, "stage": "not_modified"}
+            )
             return FetchOutcome(
                 source_id=source_id,
                 source_kind=kind,
@@ -158,6 +168,11 @@ class IngestionService:
             await self._store_page_snapshot(source_id, definition, result.raw_payload, result.content_type)
         async with transaction(self._ctx.sessions) as session:
             await SourceRepository(session).save_checkpoint(uuid.UUID(source_id), result.checkpoint)
+            await publish(
+                session,
+                EventType.SOURCE_PROGRESS,
+                {"source_id": source_id, "source": source_name, "stage": "fetched", "found": len(result.jobs)},
+            )
 
         log.info(
             "source.fetched", discovered=len(result.jobs), skipped=len(result.skipped), fetch_ms=round(result.fetch_ms)
@@ -172,6 +187,10 @@ class IngestionService:
             fetch_ms=result.fetch_ms,
             skipped_reason=result.skipped[0]["reason"] if result.skipped else None,
         )
+
+    async def _emit(self, event_type: EventType, data: dict[str, object]) -> None:
+        async with transaction(self._ctx.sessions) as session:
+            await publish(session, event_type, data)
 
     async def _store_page_snapshot(
         self, source_id: str, definition: SourceDefinition, payload: bytes, content_type: str
@@ -225,6 +244,7 @@ class IngestionService:
         new = updated = unchanged = duplicates = 0
         to_evaluate: list[str] = []
         hashes: dict[str, str] = {}
+        new_jobs: list[dict[str, str]] = []
 
         async with transaction(self._ctx.sessions) as session:
             sources = SourceRepository(session)
@@ -264,6 +284,7 @@ class IngestionService:
                     )
                     if original is None:
                         new += 1
+                        new_jobs.append({"id": str(row.id), "title": row.title, "company": item.company_name})
                     else:
                         duplicates += 1
                         logger.info("job.duplicate", job_id=str(row.id), duplicate_of=str(original.id))
@@ -288,6 +309,20 @@ class IngestionService:
 
             await jobs.touch_seen(sid, seen, now)
             closed = await self._close_missing_guarded(jobs, sid, seen, now, source_id)
+            await publish(
+                session,
+                EventType.JOBS_DISCOVERED if new or updated else EventType.SOURCE_PROGRESS,
+                {
+                    "source_id": source_id,
+                    "source": source.name,
+                    "stage": "stored",
+                    "new": new,
+                    "updated": updated,
+                    "closed": closed,
+                    "evaluating": len(to_evaluate),
+                    "jobs": new_jobs,
+                },
+            )
 
         if new:
             JOBS_DISCOVERED.labels(source_kind=kind).inc(new)
@@ -352,4 +387,16 @@ class IngestionService:
                 next_interval_seconds=interval,
                 error=record.error,
                 circuit_open_until=circuit_until,
+            )
+            await publish(
+                session,
+                EventType.SOURCE_POLLED,
+                {
+                    "source_id": record.source_id,
+                    "source": source.name,
+                    "success": record.success,
+                    "next_poll_seconds": interval,
+                    "circuit_open": circuit_until is not None,
+                    "error": record.error,
+                },
             )

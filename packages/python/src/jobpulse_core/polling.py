@@ -10,7 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-INTERVAL_LADDER_SECONDS: tuple[int, ...] = (300, 600, 900, 1800, 3600)
+# 1 min for very active sources up to 60 min for quiet ones (spec range 5-60 min, extended down).
+INTERVAL_LADDER_SECONDS: tuple[int, ...] = (60, 120, 300, 600, 900, 1800, 3600)
 CIRCUIT_BREAKER_THRESHOLD = 5
 CIRCUIT_OPEN_SECONDS = 6 * 3600
 MAX_BACKOFF_SECONDS = 4 * 3600

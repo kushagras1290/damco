@@ -1,13 +1,28 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { auth } from "@/auth";
-import { ALLOWED_METHODS, MAX_BODY_BYTES, backendPath, isSameOrigin, mintBackendToken } from "@/lib/backend-proxy";
+import {
+  ALLOWED_METHODS,
+  EVENTS_PATH,
+  MAX_BODY_BYTES,
+  backendPath,
+  clientIp,
+  forwardedRequestHeaders,
+  githubSubject,
+  isSameOrigin,
+  mintBackendToken,
+  passthroughResponseHeaders,
+  visitorSubject,
+} from "@/lib/backend-proxy";
 import { log } from "@/lib/log";
-import { serverEnv } from "@/lib/server-env";
+import { type ServerEnv, serverEnv, trustedProxyHops } from "@/lib/server-env";
 
 export const dynamic = "force-dynamic";
 
 type RouteContext = { params: Promise<{ path: string[] }> };
+
+/** Time allowed for the API to *start* an event stream; the stream itself is unbounded. */
+const STREAM_CONNECT_TIMEOUT_MS = 10_000;
 
 function problem(status: number, detail: string): NextResponse {
   return NextResponse.json(
@@ -16,7 +31,50 @@ function problem(status: number, detail: string): NextResponse {
   );
 }
 
-async function proxy(request: NextRequest, context: RouteContext): Promise<NextResponse> {
+/** Signed-in users get `github:<id>`; anonymous visitors a pseudonymous `visitor:<hash>`
+ *  (only when the client IP is trustworthy - otherwise no token: the API sees our IP). */
+async function backendSubject(request: NextRequest, env: ServerEnv): Promise<{ subject: string; login?: string } | null> {
+  const session = await auth();
+  if (session?.user?.githubId) return { subject: githubSubject(session.user.githubId), login: session.user.login };
+  const ip = clientIp(request.headers.get("x-forwarded-for"), trustedProxyHops(env));
+  return ip ? { subject: await visitorSubject(ip, env.AUTH_SECRET) } : null;
+}
+
+async function proxyStream(url: URL, headers: Headers, request: NextRequest, target: string): Promise<Response> {
+  const upstreamAbort = new AbortController();
+  const connectTimer = setTimeout(() => upstreamAbort.abort(new DOMException("connect timeout", "TimeoutError")), STREAM_CONNECT_TIMEOUT_MS);
+  // Browser went away -> release the API's stream slot immediately.
+  request.signal.addEventListener("abort", () => upstreamAbort.abort(), { once: true });
+  try {
+    const upstream = await fetch(url, {
+      headers,
+      cache: "no-store",
+      redirect: "error",
+      signal: upstreamAbort.signal,
+    });
+    clearTimeout(connectTimer);
+    if (!upstream.ok || !upstream.body) {
+      const responseHeaders = passthroughResponseHeaders(upstream.headers);
+      return new NextResponse(await upstream.text(), { status: upstream.status, headers: responseHeaders });
+    }
+    return new Response(upstream.body, {
+      status: 200,
+      headers: {
+        "content-type": "text/event-stream; charset=utf-8",
+        "cache-control": "no-store, no-transform",
+        "x-accel-buffering": "no",
+        connection: "keep-alive",
+      },
+    });
+  } catch (error) {
+    clearTimeout(connectTimer);
+    const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+    log("error", "proxy.stream_failure", { target, timed_out: timedOut });
+    return problem(timedOut ? 504 : 502, timedOut ? "event stream timed out" : "event stream unavailable");
+  }
+}
+
+async function proxy(request: NextRequest, context: RouteContext): Promise<Response> {
   if (!ALLOWED_METHODS.has(request.method)) return problem(405, "method not allowed");
   const { path } = await context.params;
   const target = backendPath(path);
@@ -31,15 +89,12 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<NextR
     }
   }
 
-  const headers = new Headers({ accept: "application/json" });
-  const requestId = request.headers.get("x-request-id");
-  if (requestId && /^[A-Za-z0-9._-]{8,128}$/.test(requestId)) headers.set("x-request-id", requestId);
-
-  const session = await auth();
-  if (session?.user?.githubId) {
+  const headers = forwardedRequestHeaders(request.headers, request.method);
+  const caller = await backendSubject(request, env);
+  if (caller) {
     const token = await mintBackendToken({
-      githubId: session.user.githubId,
-      login: session.user.login,
+      subject: caller.subject,
+      login: caller.login,
       privateJwk: env.API_JWT_PRIVATE_JWK,
       audience: env.API_JWT_AUDIENCE,
       issuer: env.API_JWT_ISSUER,
@@ -47,15 +102,16 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<NextR
     headers.set("authorization", `Bearer ${token}`);
   }
 
+  const url = new URL(target, env.API_BASE_URL);
+  url.search = request.nextUrl.search;
+  if (request.method === "GET" && target === EVENTS_PATH) return proxyStream(url, headers, request, target);
+
   let body: string | undefined;
   if (request.method !== "GET") {
     body = await request.text();
     if (new TextEncoder().encode(body).byteLength > MAX_BODY_BYTES) return problem(413, "request body too large");
     headers.set("content-type", "application/json");
   }
-
-  const url = new URL(target, env.API_BASE_URL);
-  url.search = request.nextUrl.search;
 
   try {
     const upstream = await fetch(url, {
@@ -67,13 +123,7 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<NextR
       signal: AbortSignal.timeout(env.BACKEND_TIMEOUT_MS),
     });
     const payload = await upstream.text();
-    return new NextResponse(payload, {
-      status: upstream.status,
-      headers: {
-        "content-type": upstream.headers.get("content-type") ?? "application/json",
-        "cache-control": "no-store",
-      },
-    });
+    return new NextResponse(payload, { status: upstream.status, headers: passthroughResponseHeaders(upstream.headers) });
   } catch (error) {
     const timedOut = error instanceof DOMException && error.name === "TimeoutError";
     log("error", "proxy.backend_failure", { target, timed_out: timedOut });

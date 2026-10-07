@@ -10,7 +10,7 @@ export const SOURCE_KINDS = [
   "dynamic_html",
 ] as const;
 const TOKEN_KINDS = new Set<string>(["greenhouse", "lever", "ashby"]);
-const MIN_POLL = 300;
+const MIN_POLL = 60;
 const MAX_POLL = 86_400;
 
 const interval = z.coerce.number().int().min(MIN_POLL).max(MAX_POLL);
@@ -38,8 +38,8 @@ export const sourceFormSchema = z
       .optional()
       .transform((value) => value || undefined)
       .pipe(z.url({ protocol: /^https$/, error: "Must be an https:// URL" }).optional()),
-    poll_interval_seconds: interval.default(900),
-    min_poll_interval_seconds: interval.default(300),
+    poll_interval_seconds: interval.default(300),
+    min_poll_interval_seconds: interval.default(120),
     max_poll_interval_seconds: interval.default(3600),
   })
   .superRefine((value, ctx) => {

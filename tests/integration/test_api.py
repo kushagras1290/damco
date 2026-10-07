@@ -281,15 +281,33 @@ async def test_body_size_limit(api: httpx.AsyncClient) -> None:
 
 
 async def test_rate_limit_is_keyed_by_verified_identity(settings: Settings, ctx: AppContext) -> None:
-    app = create_app(settings.model_copy(update={"rate_limit_per_minute": 2}))
+    limited = settings.model_copy(update={"rate_limit_anonymous": 2, "rate_limit_authenticated": 3})
+    app = create_app(limited)
     app.dependency_overrides[get_ctx] = lambda: ctx
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            anonymous = [(await client.get("/api/v1/me")).status_code for _ in range(3)]
-            owner = [(await client.get("/api/v1/me", headers=OWNER)).status_code for _ in range(2)]
+            anonymous = [await client.get("/api/v1/me") for _ in range(3)]
+            owner = [(await client.get("/api/v1/me", headers=OWNER)).status_code for _ in range(4)]
             forged = make_token(OWNER_ID, key=other_signing_key())
             bad = (await client.get("/api/v1/me", headers={"Authorization": f"Bearer {forged}"})).status_code
-    assert anonymous == [200, 200, 429]
-    assert owner == [200, 200]  # separate bucket from anonymous traffic on the same IP
+    assert [r.status_code for r in anonymous] == [200, 200, 429]
+    assert anonymous[0].headers["ratelimit-limit"] == "2"
+    assert anonymous[0].headers["ratelimit-remaining"] == "1"
+    assert int(anonymous[2].headers["retry-after"]) >= 1
+    assert owner == [200, 200, 200, 429]  # own (higher) bucket, separate from the IP's anonymous traffic
     assert bad == 429  # unverifiable token falls back to the (exhausted) IP bucket
+
+
+async def test_writes_have_a_tighter_bucket(settings: Settings, ctx: AppContext) -> None:
+    app = create_app(settings.model_copy(update={"rate_limit_writes": 1}))
+    app.dependency_overrides[get_ctx] = lambda: ctx
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            first = await client.patch("/api/v1/profile", json={"display_name": "one"}, headers=OWNER)
+            second = await client.patch("/api/v1/profile", json={"display_name": "two"}, headers=OWNER)
+            read = await client.get("/api/v1/profile", headers=OWNER)
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert read.status_code == 200  # reads are unaffected by the write bucket

@@ -12,11 +12,17 @@ up: ## Start the full local stack (Postgres, Temporal, API, worker, web)
 	docker compose up --build -d
 	@echo "Web http://localhost:3000 | API http://localhost:8000/docs | Temporal UI http://localhost:8233"
 
+demo: ## One command: secrets, stack, seed data, live demo board, open browser
+	uv run python scripts/demo.py
+
 down: ## Stop the stack
 	docker compose down
 
 seed: ## Seed demo profile + sources (stack must be running)
 	docker compose exec api python -m jobpulse.seed /app/seed.yaml
+
+seed-demo: ## Seed the live demo board (needs DEMO_MODE=true)
+	docker compose exec api python -m jobpulse.seed /app/seed.demo.yaml
 
 keys: ## Generate an Ed25519 key pair for web -> API tokens (prints env lines)
 	uv run python -m jobpulse.keys
@@ -48,4 +54,4 @@ audit: ## Dependency vulnerability scans
 
 check: lint typecheck test ## Everything CI runs before merge
 
-.PHONY: help install up down seed keys migrate lint typecheck test e2e audit check
+.PHONY: help install up demo down seed seed-demo keys migrate lint typecheck test e2e audit check

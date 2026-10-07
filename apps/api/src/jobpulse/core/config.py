@@ -5,6 +5,7 @@ Missing required variables crash the process immediately (fail fast).
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal, Self
@@ -22,6 +23,7 @@ EMBEDDING_DIMENSIONS = 1536
 RESEND_HOST = "api.resend.com"
 
 Environment = Literal["local", "test", "staging", "production"]
+_ORIGIN_RE = re.compile(r"^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$")
 
 
 def _split_csv(value: object) -> object:
@@ -40,6 +42,8 @@ class Settings(BaseSettings):
     )
 
     environment: Environment = "local"
+    # Enables the bundled sample-data "demo" source kind (never in production).
+    demo_mode: bool = False
     service_name: str = "jobpulse-api"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     log_json: bool = True
@@ -53,6 +57,14 @@ class Settings(BaseSettings):
     # PgBouncer in transaction mode (e.g. Neon's "-pooler" endpoint) cannot use server-side
     # prepared statements. None = auto-detect from the host name.
     db_prepared_statements: bool | None = None
+    # Realtime events need LISTEN, which PgBouncer transaction pooling cannot do. On a pooled
+    # DATABASE_URL set this to the *direct* endpoint, or realtime is disabled (with a warning).
+    database_listen_url: PostgresDsn | None = None
+
+    # --- realtime (Server-Sent Events) -------------------------------------------
+    sse_max_clients: Annotated[int, Field(ge=1, le=10_000)] = 200
+    sse_queue_size: Annotated[int, Field(ge=10, le=10_000)] = 200
+    sse_heartbeat_seconds: Annotated[float, Field(gt=0, le=60)] = 15.0
 
     # --- temporal ---------------------------------------------------------------
     temporal_address: str = "localhost:7233"
@@ -74,9 +86,26 @@ class Settings(BaseSettings):
     owner_github_ids: Annotated[list[int], NoDecode] = Field(default_factory=list)
 
     # --- http hardening ---------------------------------------------------------
-    cors_allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3000"])
+    # Browsers never call the API directly (the web app proxies server-side), so by default
+    # NO cross-origin access is granted. List exact origins only if a browser client needs it.
+    cors_allowed_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
     max_request_bytes: Annotated[int, Field(ge=1024, le=10 * 1024 * 1024)] = 256 * 1024
-    rate_limit_per_minute: Annotated[int, Field(ge=1, le=100_000)] = 120
+    request_timeout_seconds: Annotated[float, Field(gt=0, le=300)] = 30.0
+
+    # --- rate limiting (sliding window, per verified identity / visitor / IP) ---------
+    rate_limit_window_seconds: Annotated[int, Field(ge=1, le=3600)] = 60
+    rate_limit_anonymous: Annotated[int, Field(ge=1, le=100_000)] = 120
+    rate_limit_authenticated: Annotated[int, Field(ge=1, le=100_000)] = 600
+    rate_limit_writes: Annotated[int, Field(ge=1, le=100_000)] = 60
+    rate_limit_stream_connects: Annotated[int, Field(ge=1, le=10_000)] = 20
+
+    # --- redis (shared ephemeral state: rate limits, cache, idempotency) -------------
+    # Required in production (multi-instance correctness). Local dev may omit it.
+    redis_url: SecretStr | None = None
+    redis_socket_timeout_seconds: Annotated[float, Field(gt=0, le=10)] = 0.5
+    redis_connect_timeout_seconds: Annotated[float, Field(gt=0, le=10)] = 1.0
+    cache_ttl_seconds: Annotated[float, Field(ge=0, le=300)] = 5.0
+    idempotency_ttl_seconds: Annotated[int, Field(ge=60, le=7 * 86_400)] = 86_400
     # Number of reverse proxies in front of the API that append to X-Forwarded-For.
     # 0 (default) = trust no forwarding headers (safe when exposed directly).
     trusted_proxy_count: Annotated[int, Field(ge=0, le=5)] = 0
@@ -162,7 +191,17 @@ class Settings(BaseSettings):
             if missing:
                 msg = f"STORAGE_BACKEND=r2 requires: {', '.join(n.upper() for n in missing)}"
                 raise ValueError(msg)
+        bad_origins = [o for o in self.cors_allowed_origins if o != "*" and not _ORIGIN_RE.fullmatch(o)]
+        if bad_origins:
+            msg = f"CORS_ALLOWED_ORIGINS must be exact origins (scheme://host[:port]): {bad_origins}"
+            raise ValueError(msg)
+        if self.redis_url is not None and not self.redis_url.get_secret_value().startswith(("redis://", "rediss://")):
+            msg = "REDIS_URL must use redis:// or rediss://"
+            raise ValueError(msg)
         if self.environment == "production":
+            if self.demo_mode:
+                msg = "DEMO_MODE must be off in production"
+                raise ValueError(msg)
             if "*" in self.cors_allowed_origins:
                 msg = "wildcard CORS origin is not allowed in production"
                 raise ValueError(msg)
@@ -179,6 +218,17 @@ class Settings(BaseSettings):
     @property
     def sqlalchemy_url(self) -> str:
         return str(self.database_url)
+
+    @property
+    def realtime_dsn(self) -> str | None:
+        """libpq URL for the LISTEN connection, or None when realtime is unavailable."""
+        if self.database_listen_url is not None:
+            source = str(self.database_listen_url)
+        elif self.use_prepared_statements:  # direct (non-pooled) connection
+            source = self.sqlalchemy_url
+        else:
+            return None
+        return source.replace("postgresql+psycopg://", "postgresql://", 1)
 
     @property
     def use_prepared_statements(self) -> bool:

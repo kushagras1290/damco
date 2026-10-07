@@ -1,0 +1,7 @@
+# Demo-only seed (requires DEMO_MODE=true): a sample-data board that releases a few
+# fictional postings every minute so the realtime pipeline is visible end to end.
+sources:
+  - name: Demo board (sample data)
+    definition: {kind: demo, company_name: Demo board, company_domain: demo.example}
+    poll_interval_seconds: 60
+    min_poll_interval_seconds: 60

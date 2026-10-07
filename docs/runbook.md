@@ -10,6 +10,8 @@
 | Database | Neon PostgreSQL 18 | Pooled (`-pooler`) endpoint auto-detected: prepared statements off, `SET LOCAL statement_timeout` per transaction |
 | Workflows | Temporal Cloud | API key + TLS |
 | Snapshots | Cloudflare R2 | `raw/`, `pages/` (content-addressed), `staging/` (transient) |
+| Ephemeral state | Render Key Value (Redis) | Shared rate limits, idempotency keys, 5 s response cache; API only; safe to flush ([ADR 0007](adr/0007-redis-for-ephemeral-shared-state.md)) |
+| Realtime | PostgreSQL LISTEN/NOTIFY → SSE | One LISTEN connection per API process via `DATABASE_LISTEN_URL` (direct, unpooled Neon URL) |
 
 ## First-time setup checklist
 
@@ -25,9 +27,13 @@
    while a discovery run is in flight). Keep `raw/` and `pages/` (audit + replay).
 6. **Spend guards**: set `OPENAI_*_PRICE_PER_MILLION`, `OPENAI_DAILY_BUDGET_USD` and/or
    `OPENAI_DAILY_REQUEST_LIMIT` (default 2000/day).
-7. **Edge protection**: enable Vercel Firewall / WAF rate limiting for anonymous traffic;
-   the API's limiter is per instance and keys authenticated callers by verified identity.
-8. **Deploys**: add the `production` environment secrets listed in the README, then set the
+7. **Redis + realtime**: `REDIS_URL` is wired from the Key Value instance by `render.yaml`
+   (the API refuses to start in production without it). Set `DATABASE_LISTEN_URL` to the
+   *direct* Neon URL, otherwise realtime is disabled and the UI falls back to polling.
+8. **Edge protection**: keep Vercel Firewall / WAF rate limiting for volumetric abuse. The
+   API's limiter is shared via Redis and keyed per owner (`github:<id>`), per anonymous
+   visitor (`visitor:<hmac>`, minted by the web tier from Vercel's client IP) or per IP.
+9. **Deploys**: add the `production` environment secrets listed in the README, then set the
    repository variable `DEPLOY_ENABLED=true`.
 
 ## Deploy order (automated by `deploy.yml`)
@@ -61,6 +67,9 @@ migrate → API → worker → web → smoke tests. Consequences:
 | `llm_budget_exhausted_total` | Daily LLM cap hit; enrichment degraded to deterministic | Raise the cap or accept; re-evaluate jobs later |
 | `notifications_sent_total{outcome="failed"}` | Email/webhook failures | Check Resend status / webhook receiver |
 | `http_requests_total{status="5xx"}` | API errors | Sentry + logs by `request_id` |
+| `circuit_open{name="redis"} == 1` | Redis unreachable; limits per instance, cache bypassed, keyed writes 503 | Check Key Value status; clients retry keyed writes automatically |
+| `rate_limit_backend_fallbacks_total` rising | Decisions served by the local fallback limiter | Same as above |
+| `response_cache_total{result="hit"}` ratio low | Cache not absorbing dashboard load | Check TTL (`CACHE_TTL_SECONDS`) and Redis health |
 
 ## Backups and data retention
 
@@ -73,5 +82,8 @@ migrate → API → worker → web → smoke tests. Consequences:
 - **All sources failing** → check outbound allowlist (`OUTBOUND_ALLOWED_HOSTS`) and DNS.
 - **401s from the API** → `kid` mismatch between web private key and API JWKS, or clock skew > 30 s.
 - **Owner sees read-only UI** → their numeric id missing from `OWNER_GITHUB_IDS` on the API.
+- **UI shows "Polling" instead of "Live"** → API logged `events.disabled` (pooled URL without
+  `DATABASE_LISTEN_URL`) or the LISTEN connection is reconnecting (`events.listener_disconnected`).
+- **Burst of 503 `idempotency_unavailable`** → Redis down; unkeyed reads/writes still work.
 - **Workflow task failures after deploy** → non-deterministic workflow change; roll back the
   worker, add `workflow.patched`, redeploy.

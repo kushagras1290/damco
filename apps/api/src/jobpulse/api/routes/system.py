@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 from temporalio.client import Client
 from temporalio.service import RPCError
@@ -14,6 +16,7 @@ from temporalio.service import RPCError
 from jobpulse.api.deps import Ctx, Session
 from jobpulse.api.mappers import job_summary
 from jobpulse.api.schemas import DashboardStats, DependencyStatus, SystemStatus
+from jobpulse.core.cache import ResponseCache
 from jobpulse.core.errors import ServiceUnavailableError
 from jobpulse.core.security import Reader
 from jobpulse.db.session import ping
@@ -21,6 +24,7 @@ from jobpulse.repositories.activity import WorkflowRunRepository
 from jobpulse.repositories.decisions import DecisionRepository
 from jobpulse.repositories.jobs import JobFilters, JobRepository
 from jobpulse.repositories.sources import SourceRepository
+from jobpulse.services.event_hub import EventHub
 from jobpulse.services.temporal import WorkflowServiceError, connect
 
 router = APIRouter(tags=["system"])
@@ -53,7 +57,13 @@ async def metrics(ctx: Ctx) -> Response:
 
 
 @router.get("/api/v1/dashboard", response_model=DashboardStats)
-async def dashboard(_: Reader, session: Session) -> DashboardStats:
+async def dashboard(request: Request, _: Reader, session: Session) -> DashboardStats:
+    """Viewer-independent aggregates: served from the shared short-TTL cache when warm."""
+    cache: ResponseCache = request.app.state.cache
+    return await cache.get_or_compute("dashboard:v1", DashboardStats, lambda: _dashboard(session))
+
+
+async def _dashboard(session: Session) -> DashboardStats:
     now = datetime.now(tz=UTC)
     since = now - timedelta(days=DASHBOARD_DAYS)
     jobs = JobRepository(session)
@@ -88,8 +98,32 @@ async def _temporal_status(request: Request, ctx: Ctx) -> DependencyStatus:
     return DependencyStatus(name="temporal", ok=bool(healthy), detail=ctx.settings.temporal_address)
 
 
+def _realtime_status(request: Request) -> DependencyStatus:
+    hub: EventHub = request.app.state.events
+    if not hub.enabled:
+        return DependencyStatus(name="realtime", ok=False, detail="disabled (pooled DB without DATABASE_LISTEN_URL)")
+    detail = f"{hub.subscriber_count} live client(s)" if hub.connected else "reconnecting"
+    return DependencyStatus(name="realtime", ok=hub.connected, detail=detail)
+
+
 @router.get("/api/v1/system", response_model=SystemStatus)
 async def system_status(request: Request, _: Reader, ctx: Ctx) -> SystemStatus:
+    cache: ResponseCache = request.app.state.cache
+    return await cache.get_or_compute("system:v1", SystemStatus, lambda: _system_status(request, ctx))
+
+
+async def _redis_status(request: Request) -> DependencyStatus:
+    redis: Redis | None = request.app.state.redis
+    if redis is None:
+        return DependencyStatus(name="redis", ok=False, detail="not configured (per-instance limits, no cache)")
+    try:
+        await asyncio.wait_for(redis.ping(), timeout=READINESS_TIMEOUT_SECONDS)
+    except (TimeoutError, RedisError, OSError) as exc:
+        return DependencyStatus(name="redis", ok=False, detail=f"{type(exc).__name__} (degraded: fail-open)")
+    return DependencyStatus(name="redis", ok=True, detail="reachable")
+
+
+async def _system_status(request: Request, ctx: Ctx) -> SystemStatus:
     settings = ctx.settings
     try:
         await asyncio.wait_for(ping(ctx.engine), timeout=READINESS_TIMEOUT_SECONDS)
@@ -106,5 +140,10 @@ async def system_status(request: Request, _: Reader, ctx: Ctx) -> SystemStatus:
             "reasoning": settings.openai_reasoning_model,
             "embedding": settings.openai_embedding_model,
         },
-        dependencies=[database, await _temporal_status(request, ctx)],
+        dependencies=[
+            database,
+            await _temporal_status(request, ctx),
+            await _redis_status(request),
+            _realtime_status(request),
+        ],
     )

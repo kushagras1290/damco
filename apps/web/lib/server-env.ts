@@ -48,6 +48,10 @@ export const serverEnvSchema = z
     AUTH_GITHUB_ID: z.string().optional(),
     AUTH_GITHUB_SECRET: z.string().optional(),
     BACKEND_TIMEOUT_MS: z.coerce.number().int().min(1000).max(60_000).default(15_000),
+    // Proxies in front of this app whose X-Forwarded-For is trustworthy. Unset: 1 on Vercel
+    // (it overwrites the header with the real client IP), otherwise 0 (header ignored).
+    TRUSTED_PROXY_HOPS: z.preprocess((value) => (value === "" ? undefined : value), z.coerce.number().int().min(0).max(5).optional()),
+    VERCEL: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     if (Boolean(env.AUTH_GITHUB_ID) !== Boolean(env.AUTH_GITHUB_SECRET)) {
@@ -84,6 +88,11 @@ export function serverEnv(): ServerEnv {
     cached = parsed.data;
   }
   return cached;
+}
+
+/** Resolved proxy-hop trust (explicit setting wins; Vercel's edge is trusted by default). */
+export function trustedProxyHops(env: ServerEnv = serverEnv()): number {
+  return env.TRUSTED_PROXY_HOPS ?? (env.VERCEL ? 1 : 0);
 }
 
 export function githubConfigured(env: ServerEnv = serverEnv()): boolean {

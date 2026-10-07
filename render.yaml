@@ -1,6 +1,7 @@
 # Render Blueprint: API web service + Temporal background worker, both pulled as prebuilt
 # images pushed to GHCR by .github/workflows/deploy.yml (which then triggers each deploy).
 # Neon, Temporal Cloud, R2 and Resend are external; supply their secrets in the dashboard.
+# Redis (rate limits, cache, idempotency) is a Render Key Value instance wired in below.
 # If the GHCR packages are private, add a registry credential named `ghcr` in Render.
 
 services:
@@ -20,9 +21,12 @@ services:
       - { key: TRUSTED_PROXY_COUNT, value: "1" }
       - { key: FORWARDED_ALLOW_IPS, value: "*" }
       - { key: DATABASE_URL, sync: false }
+      # Direct (unpooled) Neon URL for LISTEN/NOTIFY realtime events.
+      - { key: DATABASE_LISTEN_URL, sync: false }
       - { key: API_JWT_JWKS, sync: false }
       - { key: OWNER_GITHUB_IDS, sync: false }
-      - { key: CORS_ALLOWED_ORIGINS, sync: false }
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: jobpulse-redis, property: connectionString }
       - { key: TEMPORAL_ADDRESS, sync: false }
       - { key: TEMPORAL_NAMESPACE, sync: false }
       - { key: TEMPORAL_API_KEY, sync: false }
@@ -60,3 +64,11 @@ services:
       - { key: WEBHOOK_SIGNING_SECRET, sync: false }
       - { key: DASHBOARD_BASE_URL, sync: false }
       - { key: SENTRY_DSN, sync: false }
+
+  - type: keyvalue
+    name: jobpulse-redis
+    plan: starter
+    # Every key JobPulse writes has a TTL; evict only those under memory pressure.
+    maxmemoryPolicy: volatile-lru
+    # Private network only: no public access.
+    ipAllowList: []

@@ -7,8 +7,8 @@ const baseSource = {
   company_domain: "Acme.io",
   board_token: "acme",
   url: "",
-  poll_interval_seconds: "900",
-  min_poll_interval_seconds: "300",
+  poll_interval_seconds: "300",
+  min_poll_interval_seconds: "120",
   max_poll_interval_seconds: "3600",
 };
 
@@ -17,7 +17,7 @@ describe("sourceFormSchema", () => {
     const parsed = sourceFormSchema.parse(baseSource);
     expect(parsed.company_domain).toBe("acme.io");
     expect(parsed.url).toBeUndefined();
-    expect(parsed.poll_interval_seconds).toBe(900);
+    expect(parsed.poll_interval_seconds).toBe(300);
   });
 
   it("requires a board token for ATS kinds", () => {
@@ -37,7 +37,7 @@ describe("sourceFormSchema", () => {
   });
 
   it("rejects intervals outside bounds and unsafe tokens", () => {
-    expect(sourceFormSchema.safeParse({ ...baseSource, poll_interval_seconds: "100" }).success).toBe(false);
+    expect(sourceFormSchema.safeParse({ ...baseSource, poll_interval_seconds: "30" }).success).toBe(false);
     expect(sourceFormSchema.safeParse({ ...baseSource, poll_interval_seconds: "7200" }).success).toBe(false);
     expect(sourceFormSchema.safeParse({ ...baseSource, board_token: "../etc" }).success).toBe(false);
   });

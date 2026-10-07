@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import text
 
 from jobpulse.core.config import Settings
@@ -20,6 +21,8 @@ from tests.auth_helpers import JWKS_JSON, OWNER_ID
 
 ROOT = Path(__file__).resolve().parents[2]
 PG_IMAGE = "pgvector/pgvector:pg18"
+REDIS_IMAGE = "redis:8.8.3-alpine"
+REDIS_TEST_PASSWORD = "jobpulse-test"
 TRUNCATE = (
     "TRUNCATE audit_events, applications, notifications, match_scores, job_intelligence, "
     "eligibility_decisions, job_versions, raw_snapshots, workflow_runs, jobs, source_checkpoints, "
@@ -55,6 +58,22 @@ def database_url() -> Iterator[str]:
 
 
 @pytest.fixture(scope="session")
+def redis_url() -> Iterator[str]:
+    external = os.environ.get("JOBPULSE_TEST_REDIS_URL")
+    if external:
+        yield external
+        return
+    if not _docker_available():
+        pytest.skip("Docker not available for Testcontainers")
+    from testcontainers.community.redis import RedisContainer  # noqa: PLC0415 - optional heavy import
+
+    with RedisContainer(REDIS_IMAGE, password=REDIS_TEST_PASSWORD) as container:
+        host = container.get_container_host_ip()
+        port = container.get_exposed_port(container.port)
+        yield f"redis://:{REDIS_TEST_PASSWORD}@{host}:{port}/0"
+
+
+@pytest.fixture(scope="session")
 def migrated(database_url: str) -> str:
     env = {**os.environ, "DATABASE_URL": database_url}
     for attempt in range(10):
@@ -82,11 +101,27 @@ def settings(migrated: str, tmp_path: Path) -> Settings:
         environment="test",
         local_storage_path=tmp_path / "snapshots",
         log_json=False,
-        rate_limit_per_minute=1000,
+        rate_limit_anonymous=10_000,
+        rate_limit_authenticated=10_000,
+        rate_limit_writes=10_000,
+        rate_limit_stream_connects=10_000,
         trusted_proxy_count=0,
         openai_api_key=None,
         webhook_signing_secret="whsec-test",  # type: ignore[arg-type]
     )
+
+
+@pytest.fixture
+async def redis_settings(settings: Settings, redis_url: str) -> Settings:
+    """Settings wired to a real (flushed) Redis: shared limiter, cache and idempotency."""
+    from redis.asyncio import Redis  # noqa: PLC0415 - only needed by Redis-backed tests
+
+    client = Redis.from_url(redis_url)
+    try:
+        await client.flushdb()
+    finally:
+        await client.aclose()
+    return settings.model_copy(update={"redis_url": SecretStr(redis_url)})
 
 
 class TestHttpContext(AppContext):

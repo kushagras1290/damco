@@ -21,6 +21,7 @@ from jobpulse.db.session import transaction
 from jobpulse.repositories.activity import WorkflowRunRepository
 from jobpulse.services.context import AppContext
 from jobpulse.services.evaluation import EvaluationService
+from jobpulse.services.events import EventType, publish
 from jobpulse.services.ingestion import IngestionService
 from jobpulse_core import workflow_names as names
 from jobpulse_core.contracts import (
@@ -146,6 +147,16 @@ class RunActivities:
                 source_id=_uuid_or_none(record.source_id),
                 job_id=_uuid_or_none(record.job_id),
             )
+            if record.workflow_type in BROADCAST_RUN_TYPES:
+                await publish(
+                    session,
+                    EventType.RUN_STARTED,
+                    {
+                        "workflow_type": record.workflow_type,
+                        "workflow_id": record.workflow_id,
+                        "source_id": record.source_id,
+                    },
+                )
 
     @activity.defn(name=names.RECORD_RUN_FINISH)
     @translate_errors
@@ -159,6 +170,22 @@ class RunActivities:
                 error=record.error,
                 now=datetime.now(tz=UTC),
             )
+            # Evaluation runs are numerous; their successes are already visible as job.evaluated.
+            if activity.info().workflow_type in BROADCAST_RUN_TYPES or record.status == "failed":
+                await publish(
+                    session,
+                    EventType.RUN_FINISHED,
+                    {
+                        "workflow_type": activity.info().workflow_type,
+                        "workflow_id": record.workflow_id,
+                        "status": record.status,
+                        "error": record.error,
+                        "stats": dict(record.stats),
+                    },
+                )
+
+
+BROADCAST_RUN_TYPES = frozenset({names.SOURCE_DISCOVERY_WORKFLOW})
 
 
 def _uuid_or_none(value: str | None) -> uuid.UUID | None:

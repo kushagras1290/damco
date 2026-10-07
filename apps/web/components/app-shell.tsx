@@ -2,6 +2,7 @@ import { LogIn, LogOut, Zap } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { auth, signIn, signOut } from "@/auth";
+import { LiveStatusBadge } from "@/components/live-events";
 import { NavLinks } from "@/components/nav-links";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/primitives";
@@ -28,6 +29,9 @@ export async function AppShell({ children }: { children: ReactNode }) {
           <div className="flex items-center gap-2 font-semibold">
             <Zap className="size-5 text-primary" aria-hidden />
             JobPulse
+            <span className="ml-auto md:ml-2">
+              <LiveStatusBadge />
+            </span>
           </div>
           <div className="flex items-center gap-2 md:mt-2 md:flex-col md:items-stretch">
             {user ? (

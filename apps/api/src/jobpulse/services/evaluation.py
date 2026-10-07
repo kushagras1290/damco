@@ -30,6 +30,7 @@ from jobpulse.repositories.decisions import DecisionRepository
 from jobpulse.repositories.jobs import JobRepository
 from jobpulse.repositories.profiles import ProfileRepository, to_domain
 from jobpulse.services.context import AppContext
+from jobpulse.services.events import EventType, publish
 from jobpulse_core.contracts import JobRef, StageResult
 from jobpulse_core.domain.models import (
     EligibilityStatus,
@@ -141,6 +142,18 @@ class EvaluationService:
                 workflow_state="eligibility_checked" if result.eligible else "rejected",
                 clear_score=not result.eligible,
             )
+            if not result.eligible:
+                await publish(
+                    session,
+                    EventType.JOB_EVALUATED,
+                    {
+                        "job_id": ref.job_id,
+                        "title": row.title,
+                        "company": company.name,
+                        "eligible": False,
+                        "failed_rules": [r.rule.value for r in result.rules if r.outcome is RuleOutcome.FAIL],
+                    },
+                )
         if not result.eligible:
             for rule in result.rules:
                 if rule.outcome is RuleOutcome.FAIL:
@@ -347,6 +360,16 @@ class EvaluationService:
                 clear_score=not match.actionable,
             )
             threshold = profile.notify_min_score
+            summary = {
+                "job_id": ref.job_id,
+                "title": row.title,
+                "company": company.name,
+                "eligible": match.actionable,
+                "score": match.final_score,
+            }
+            await publish(session, EventType.JOB_EVALUATED, summary)
+            if match.actionable and match.final_score >= threshold:
+                await publish(session, EventType.JOB_MATCHED, summary)
         if match.actionable and match.final_score >= threshold:
             JOBS_MATCHED.inc()
         JOB_PROCESSING_DURATION.labels(stage="ranking").observe(time.perf_counter() - started)
@@ -440,6 +463,11 @@ class EvaluationService:
                         raise
                     continue
                 await decisions.mark_notification(claim, status="sent", error=None, now=datetime.now(tz=UTC))
+                await publish(
+                    session,
+                    EventType.NOTIFICATION_SENT,
+                    {"job_id": ref.job_id, "title": base_message.title, "channel": provider.channel},
+                )
             NOTIFICATIONS_SENT.labels(channel=provider.channel, outcome="sent").inc()
             sent += 1
 

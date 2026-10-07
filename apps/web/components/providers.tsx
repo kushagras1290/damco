@@ -3,6 +3,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
+import { LiveEvents } from "@/components/live-events";
 import { ApiError } from "@/lib/api/client";
 
 const MAX_RETRIES = 2;
@@ -22,5 +23,10 @@ export function Providers({ children }: { children: ReactNode }) {
         },
       }),
   );
-  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  return (
+    <QueryClientProvider client={client}>
+      {children}
+      <LiveEvents />
+    </QueryClientProvider>
+  );
 }

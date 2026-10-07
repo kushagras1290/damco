@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { serverEnvSchema } from "@/lib/server-env";
+import { serverEnvSchema, trustedProxyHops } from "@/lib/server-env";
 
 vi.mock("server-only", () => ({}));
 
@@ -49,6 +49,17 @@ describe("serverEnvSchema", () => {
     [{ AUTH_GITHUB_ID: "id" }, "set both AUTH_GITHUB_ID and AUTH_GITHUB_SECRET"],
   ])("rejects invalid values %j", (override, message) => {
     expect(issues({ ...BASE, ...override })).toContain(message);
+  });
+
+  it.each([
+    [{}, 0],
+    [{ TRUSTED_PROXY_HOPS: "" }, 0],
+    [{ VERCEL: "1" }, 1],
+    [{ VERCEL: "1", TRUSTED_PROXY_HOPS: "" }, 1],
+    [{ VERCEL: "1", TRUSTED_PROXY_HOPS: "0" }, 0],
+    [{ TRUSTED_PROXY_HOPS: "2" }, 2],
+  ])("resolves proxy trust %j -> %i", (override, expected) => {
+    expect(trustedProxyHops(serverEnvSchema.parse({ ...BASE, ...override }))).toBe(expected);
   });
 
   it("requires a kid on the signing key", () => {

@@ -11,6 +11,7 @@ import { TBody, TD, TH, THead, TR, Table } from "@/components/ui/table";
 import { SourceForm } from "@/features/sources/source-form";
 import { useIsOwner, useSources } from "@/lib/api/hooks";
 import type { Source } from "@/lib/api/types";
+import { useLiveFeed } from "@/lib/stores/live-feed";
 import { formatSeconds, timeAgo } from "@/lib/utils";
 
 export function SourceHealth({ source }: { source: Source }) {
@@ -20,6 +21,20 @@ export function SourceHealth({ source }: { source: Source }) {
   }
   if (source.consecutive_failures > 0) return <Badge tone="warning">{source.consecutive_failures} failures</Badge>;
   return <Badge tone="success">healthy</Badge>;
+}
+
+const IN_FLIGHT_STAGES = new Set(["fetching", "fetched"]);
+
+/** Live sync indicator fed by `source.progress` events (nothing rendered when idle). */
+export function SourceActivity({ sourceId }: { sourceId: string }) {
+  const progress = useLiveFeed((state) => state.sourceProgress[sourceId]);
+  if (!progress || !IN_FLIGHT_STAGES.has(progress.stage)) return null;
+  return (
+    <Badge tone="info" data-testid="source-syncing">
+      <span className="size-1.5 animate-pulse rounded-full bg-primary" aria-hidden />
+      syncing
+    </Badge>
+  );
 }
 
 export function SourcesView() {
@@ -78,10 +93,13 @@ export function SourcesView() {
                     <span className="block text-xs text-muted-foreground">{source.company_domain}</span>
                   </TD>
                   <TD>
-                    <Badge>{source.kind}</Badge>
+                    <Badge tone={source.kind === "demo" ? "info" : "neutral"}>{source.kind}</Badge>
                   </TD>
                   <TD>
-                    <SourceHealth source={source} />
+                    <span className="flex flex-wrap items-center gap-1">
+                      <SourceHealth source={source} />
+                      <SourceActivity sourceId={source.id} />
+                    </span>
                   </TD>
                   <TD className="tabular-nums">{source.open_jobs}</TD>
                   <TD className="tabular-nums">{formatSeconds(source.poll_interval_seconds)}</TD>

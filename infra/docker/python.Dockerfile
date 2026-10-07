@@ -52,7 +52,7 @@ USER jobpulse
 FROM runtime AS api
 COPY --chown=jobpulse:jobpulse alembic.ini ./alembic.ini
 COPY --chown=jobpulse:jobpulse migrations ./migrations
-COPY --chown=jobpulse:jobpulse seed.yaml ./seed.yaml
+COPY --chown=jobpulse:jobpulse seed.yaml seed.demo.yaml ./
 ENV PORT=8000
 EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \

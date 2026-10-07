@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { EmptyState, ErrorState, LoadingRows, PageHeader, ScorePill } from "@/components/common";
+import { LiveFeedList, LiveStatusBadge } from "@/components/live-events";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/primitives";
 import { useDashboard } from "@/lib/api/hooks";
 import { humanize } from "@/lib/utils";
@@ -45,6 +46,19 @@ export function DashboardView() {
         <Stat label="Sources" value={data.sources_total} />
         <Stat label="Runs (24h)" value={runsTotal} hint={runsFailed ? `${runsFailed} failed` : "no failures"} />
       </div>
+
+      <Card className="mt-4">
+        <CardHeader className="flex flex-row items-center justify-between gap-2">
+          <div>
+            <CardTitle>Live activity</CardTitle>
+            <CardDescription>Discoveries, evaluations and alerts as they happen</CardDescription>
+          </div>
+          <LiveStatusBadge />
+        </CardHeader>
+        <CardContent>
+          <LiveFeedList />
+        </CardContent>
+      </Card>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <Card>

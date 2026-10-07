@@ -16,6 +16,9 @@ JobEvaluationWorkflow: Eligibility → Enrichment → Embedding → Ranking → 
    │
    ▼
 PostgreSQL 18 (pgvector · pg_trgm · FTS)  ──►  FastAPI  ──►  Next.js dashboard
+   │ pg_notify (in the same transaction)        ▲ SSE: live feed, toasts, cache invalidation
+   └──────────────► LISTEN ─► EventHub ─────────┘
+Redis: shared rate limits · idempotency keys · response cache (ephemeral, fail-safe)
 ```
 
 ## What is in the box
@@ -27,16 +30,26 @@ PostgreSQL 18 (pgvector · pg_trgm · FTS)  ──►  FastAPI  ──►  Next.
 | Worker | `apps/worker` — Temporal workflows/activities, continue-as-new polling loops |
 | Web | `apps/web` — Next.js 16, React 19, Tailwind 4, shadcn-style UI, TanStack Query/Table v9, Zustand, RHF + Zod, Recharts, Auth.js (GitHub) |
 | Data | PostgreSQL 18: UUIDv7 keys, pgvector HNSW, `pg_trgm` GIN, generated `tsvector` + GIN |
+| Realtime | Commit-coupled `pg_notify` → one LISTEN connection per API process → Server-Sent Events; live feed, match toasts, per-source sync status; polling only as fallback |
+| Production hardening | Redis sliding-window rate limits (per owner / visitor / IP, tiered reads·writes·streams, `RateLimit-*` headers), Stripe-style `Idempotency-Key`, short-TTL response cache, circuit breaker, request timeouts, gzip, deny-by-default CORS |
 | Ops | Docker multi-stage (non-root, read-only), Compose, GitHub Actions CI/CD, Render + Vercel + Neon + Temporal Cloud + R2 |
 
 ## Quick start (local)
 
 Requirements: Docker, [uv](https://docs.astral.sh/uv/) ≥ 0.12, Node 24 + pnpm.
 
+**One command** (generates missing secrets, starts everything, seeds a live demo board):
+
+```bash
+make demo        # or: uv run python scripts/demo.py
+```
+
+Then follow the [demo walkthrough](docs/demo.md). Manual setup:
+
 ```bash
 cp .env.example .env            # set AUTH_SECRET (≥ 32 chars)
 make keys                       # paste API_JWT_PRIVATE_JWK + API_JWT_JWKS into .env
-docker compose up --build -d    # Postgres, Temporal (+UI), migrations, API, worker, web
+docker compose up --build -d    # Postgres, Redis, Temporal (+UI), migrations, API, worker, web
 make seed                       # demo profile + three public job boards
 ```
 
@@ -107,6 +120,7 @@ variables `PRODUCTION_API_URL` / `PRODUCTION_WEB_URL` for smoke tests.
 
 ## Documentation
 
+- [Demo walkthrough](docs/demo.md)
 - [Architecture](docs/architecture/overview.md)
 - [ADRs](docs/adr/)
 - [Production runbook](docs/runbook.md)

@@ -1,6 +1,7 @@
 # ADR 0003 — PostgreSQL as the only datastore
 
-**Status:** Accepted
+**Status:** Accepted · amended by [ADR 0007](0007-redis-for-ephemeral-shared-state.md)
+(PostgreSQL remains the only system of record; Redis holds TTL-bound ephemeral state only)
 
 ## Decision
 PostgreSQL 18 holds all transactional, search and vector data: pgvector (HNSW) for semantic

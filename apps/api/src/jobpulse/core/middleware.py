@@ -7,11 +7,11 @@ limits are enforced before the payload is buffered.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import re
 import time
 import uuid
-from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -22,13 +22,13 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from jobpulse.core.errors import problem_response
 from jobpulse.core.metrics import HTTP_LATENCY, HTTP_REQUESTS
+from jobpulse.core.ratelimit import RateDecision, RateLimiter
 
 logger = structlog.get_logger("jobpulse.access")
 
 REQUEST_ID_HEADER = "x-request-id"
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{8,128}$")
 RATE_LIMIT_EXEMPT_PREFIXES = ("/health", "/metrics")
-MAX_TRACKED_CLIENTS = 10_000
 
 SECURITY_HEADERS: dict[str, str] = {
     "x-content-type-options": "nosniff",
@@ -138,47 +138,49 @@ class _BodyTooLargeError(Exception):
     """Internal control-flow signal for streamed oversize bodies."""
 
 
-@dataclass(slots=True)
-class _Bucket:
-    tokens: float
-    updated: float
+@dataclass(frozen=True, slots=True)
+class RateLimitPolicy:
+    window_seconds: int
+    anonymous: int
+    authenticated: int
+    writes: int
+    stream_connects: int
+
+
+@dataclass(frozen=True, slots=True)
+class CallerIdentity:
+    key: str
+    authenticated: bool
+
+
+WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+STREAM_PREFIX = "/api/v1/events"
 
 
 class RateLimitMiddleware:
-    """In-process token bucket per verified identity, else per client IP.
+    """Tiered sliding-window limits backed by a shared limiter (Redis, with local fallback).
 
-    Authenticated callers are keyed by their *verified* token subject so they never share
-    a bucket with anonymous traffic arriving through the web proxy; an unverifiable token
-    falls back to the IP key (and is rejected by the auth layer anyway).
-
-    Per-instance state: with several API instances, enforce anonymous limits at the edge
-    as well (docs/runbook.md).
+    Buckets, all per caller (verified owner > signed visitor id > client IP):
+      * requests: ``anonymous`` or ``authenticated`` limit per window
+      * writes:   additional ``writes`` limit for state-changing methods
+      * streams:  ``stream_connects`` limit for opening realtime streams
+    Every response carries RateLimit-Limit / -Remaining / -Reset; 429s add Retry-After.
     """
 
     def __init__(
         self,
         app: ASGIApp,
         *,
-        per_minute: int,
+        limiter: RateLimiter,
+        policy: RateLimitPolicy,
         trusted_proxy_count: int,
-        identify: Callable[[str], str | None] | None = None,
+        identify: Callable[[str], CallerIdentity | None] | None = None,
     ) -> None:
         self.app = app
-        self.capacity = float(per_minute)
-        self.refill_per_second = per_minute / 60.0
+        self.limiter = limiter
+        self.policy = policy
         self.trusted_proxy_count = trusted_proxy_count
         self.identify = identify
-        self._buckets: OrderedDict[str, _Bucket] = OrderedDict()
-
-    def _key(self, scope: Scope) -> str:
-        if self.identify is not None:
-            header = Headers(scope=scope).get("authorization", "")
-            scheme, _, token = header.partition(" ")
-            if scheme.lower() == "bearer" and token:
-                subject = self.identify(token.strip())
-                if subject:
-                    return f"sub:{subject}"
-        return f"ip:{self._client_ip(scope)}"
 
     def _client_ip(self, scope: Scope) -> str:
         if self.trusted_proxy_count:
@@ -194,36 +196,90 @@ class RateLimitMiddleware:
         client = scope.get("client")
         return client[0] if client else "unknown"
 
-    def _allow(self, key: str) -> tuple[bool, float]:
-        now = time.monotonic()
-        bucket = self._buckets.get(key)
-        if bucket is None:
-            bucket = _Bucket(tokens=self.capacity, updated=now)
-            self._buckets[key] = bucket
-            if len(self._buckets) > MAX_TRACKED_CLIENTS:
-                self._buckets.popitem(last=False)
-        else:
-            self._buckets.move_to_end(key)
-        bucket.tokens = min(self.capacity, bucket.tokens + (now - bucket.updated) * self.refill_per_second)
-        bucket.updated = now
-        if bucket.tokens >= 1:
-            bucket.tokens -= 1
-            return True, 0.0
-        return False, (1 - bucket.tokens) / self.refill_per_second
+    def _caller(self, scope: Scope) -> CallerIdentity:
+        if self.identify is not None:
+            header = Headers(scope=scope).get("authorization", "")
+            scheme, _, token = header.partition(" ")
+            if scheme.lower() == "bearer" and token:
+                identity = self.identify(token.strip())
+                if identity is not None:
+                    return identity
+        return CallerIdentity(key=f"ip:{self._client_ip(scope)}", authenticated=False)
+
+    async def _decide(self, scope: Scope) -> RateDecision:
+        caller = self._caller(scope)
+        policy = self.policy
+        window = policy.window_seconds
+        if scope["path"].startswith(STREAM_PREFIX):
+            return await self.limiter.hit(f"stream:{caller.key}", limit=policy.stream_connects, window_seconds=window)
+        limit = policy.authenticated if caller.authenticated else policy.anonymous
+        decision = await self.limiter.hit(f"req:{caller.key}", limit=limit, window_seconds=window)
+        if decision.allowed and scope["method"] in WRITE_METHODS:
+            write = await self.limiter.hit(f"write:{caller.key}", limit=policy.writes, window_seconds=window)
+            if not write.allowed or write.remaining < decision.remaining:
+                return write
+        return decision
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or scope["path"].startswith(RATE_LIMIT_EXEMPT_PREFIXES):
             await self.app(scope, receive, send)
             return
-        allowed, retry_after = self._allow(self._key(scope))
-        if not allowed:
+        decision = await self._decide(scope)
+        rate_headers = {
+            "RateLimit-Limit": str(decision.limit),
+            "RateLimit-Remaining": str(decision.remaining),
+            "RateLimit-Reset": str(decision.reset_seconds),
+        }
+        if not decision.allowed:
             response = problem_response(
                 429,
                 "rate_limited",
                 "too many requests",
                 Request(scope),
-                headers={"Retry-After": str(max(1, int(retry_after) + 1))},
+                headers={**rate_headers, "Retry-After": str(decision.reset_seconds)},
             )
             await response(scope, receive, send)
             return
-        await self.app(scope, receive, send)
+
+        async def send_with_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                for name, value in rate_headers.items():
+                    headers.setdefault(name, value)
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+class RequestTimeoutMiddleware:
+    """Server-side deadline per request (long-lived streams excluded).
+
+    Prevents slow handlers from holding workers indefinitely; returns 504 if the deadline
+    passes before the response has started.
+    """
+
+    def __init__(self, app: ASGIApp, *, timeout_seconds: float, exempt_prefixes: tuple[str, ...]) -> None:
+        self.app = app
+        self.timeout_seconds = timeout_seconds
+        self.exempt_prefixes = exempt_prefixes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["path"].startswith(self.exempt_prefixes):
+            await self.app(scope, receive, send)
+            return
+        started = False
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            async with asyncio.timeout(self.timeout_seconds):
+                await self.app(scope, receive, tracking_send)
+        except TimeoutError:
+            logger.warning("http.request_timeout", path=scope["path"], timeout_s=self.timeout_seconds)
+            if not started:
+                response = problem_response(504, "request_timeout", "request took too long", Request(scope))
+                await response(scope, receive, send)

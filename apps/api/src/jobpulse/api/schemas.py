@@ -191,9 +191,9 @@ class SourceCreate(BaseModel):
         default_factory=dict,
         max_length=20,
     )
-    poll_interval_seconds: Annotated[int, Field(ge=300, le=86_400)] = 900
-    min_poll_interval_seconds: Annotated[int, Field(ge=300, le=86_400)] = 300
-    max_poll_interval_seconds: Annotated[int, Field(ge=300, le=86_400)] = 3600
+    poll_interval_seconds: Annotated[int, Field(ge=60, le=86_400)] = 300
+    min_poll_interval_seconds: Annotated[int, Field(ge=60, le=86_400)] = 120
+    max_poll_interval_seconds: Annotated[int, Field(ge=60, le=86_400)] = 3600
 
     @model_validator(mode="after")
     def _interval_bounds(self) -> Self:
@@ -211,9 +211,9 @@ class SourcePatch(BaseModel):
 
     name: ShortText | None = None
     enabled: bool | None = None
-    poll_interval_seconds: Annotated[int | None, Field(ge=300, le=86_400)] = None
-    min_poll_interval_seconds: Annotated[int | None, Field(ge=300, le=86_400)] = None
-    max_poll_interval_seconds: Annotated[int | None, Field(ge=300, le=86_400)] = None
+    poll_interval_seconds: Annotated[int | None, Field(ge=60, le=86_400)] = None
+    min_poll_interval_seconds: Annotated[int | None, Field(ge=60, le=86_400)] = None
+    max_poll_interval_seconds: Annotated[int | None, Field(ge=60, le=86_400)] = None
 
 
 class SourceOut(BaseModel):

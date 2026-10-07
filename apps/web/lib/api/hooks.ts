@@ -3,6 +3,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api, type QueryParams } from "@/lib/api/client";
+import { fallbackRefetchInterval } from "@/lib/stores/live-feed";
 import type {
   ActionAccepted,
   Application,
@@ -21,7 +22,8 @@ import type {
 } from "@/lib/api/types";
 import type { ProfileFormValues, SourceFormValues } from "@/lib/schemas";
 
-const LIVE_REFRESH_MS = 15_000;
+/** Only used while the realtime stream is down; live events invalidate queries otherwise. */
+const refetchWhenOffline = fallbackRefetchInterval(15_000);
 
 export const keys = {
   me: ["me"] as const,
@@ -45,7 +47,7 @@ export function useIsOwner(): boolean {
 }
 
 export const useDashboard = () =>
-  useQuery({ queryKey: keys.dashboard, queryFn: () => api.get<DashboardStats>("/dashboard"), refetchInterval: LIVE_REFRESH_MS });
+  useQuery({ queryKey: keys.dashboard, queryFn: () => api.get<DashboardStats>("/dashboard"), refetchInterval: refetchWhenOffline });
 
 export const useJobs = (params: QueryParams) =>
   useQuery({
@@ -63,18 +65,18 @@ export const useSources = () =>
   useQuery({
     queryKey: keys.sources,
     queryFn: () => api.get<Page<Source>>("/sources", { limit: 100 }),
-    refetchInterval: LIVE_REFRESH_MS,
+    refetchInterval: refetchWhenOffline,
   });
 
 export const useSource = (id: string) =>
-  useQuery({ queryKey: keys.source(id), queryFn: () => api.get<Source>(`/sources/${id}`), refetchInterval: LIVE_REFRESH_MS });
+  useQuery({ queryKey: keys.source(id), queryFn: () => api.get<Source>(`/sources/${id}`), refetchInterval: refetchWhenOffline });
 
 export const useRuns = (params: QueryParams) =>
   useQuery({
     queryKey: keys.runs(params),
     queryFn: () => api.get<Page<Run>>("/runs", params),
     placeholderData: keepPreviousData,
-    refetchInterval: LIVE_REFRESH_MS,
+    refetchInterval: refetchWhenOffline,
   });
 
 export const useDecisions = (params: QueryParams) =>
@@ -90,7 +92,7 @@ export const useApplications = (params: QueryParams) =>
 export const useProfile = () => useQuery({ queryKey: keys.profile, queryFn: () => api.get<Profile>("/profile") });
 
 export const useSystem = () =>
-  useQuery({ queryKey: keys.system, queryFn: () => api.get<SystemStatus>("/system"), refetchInterval: LIVE_REFRESH_MS });
+  useQuery({ queryKey: keys.system, queryFn: () => api.get<SystemStatus>("/system"), refetchInterval: refetchWhenOffline });
 
 // ------------------------------------------------------------------ mutations
 

@@ -24,6 +24,7 @@ class SourceKind(StrEnum):
     GENERIC_JSON = "generic_json"
     STATIC_HTML = "static_html"
     DYNAMIC_HTML = "dynamic_html"
+    DEMO = "demo"  # bundled sample data; only usable when DEMO_MODE is enabled
 
 
 class RemotePolicy(StrEnum):
@@ -81,6 +82,8 @@ class SourceDefinition(BaseModel):
     @model_validator(mode="after")
     def _require_locator(self) -> Self:
         token_kinds = {SourceKind.GREENHOUSE, SourceKind.LEVER, SourceKind.ASHBY}
+        if self.kind is SourceKind.DEMO:
+            return self
         if self.kind in token_kinds and not self.board_token:
             msg = f"{self.kind.value} sources require board_token"
             raise ValueError(msg)

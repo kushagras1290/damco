@@ -4,7 +4,16 @@ export type EligibilityStatus = "pending" | "eligible" | "ineligible";
 export type RemotePolicy = "remote" | "hybrid" | "onsite" | "unknown";
 export type RuleOutcome = "pass" | "fail" | "unknown";
 export type ApplicationStatus = "interested" | "applied" | "interviewing" | "offer" | "rejected" | "withdrawn";
-export type SourceKind = "greenhouse" | "lever" | "ashby" | "rss" | "generic_json" | "static_html" | "dynamic_html";
+/** `demo` exists only when the API runs with DEMO_MODE (seeded, not user-creatable). */
+export type SourceKind =
+  | "greenhouse"
+  | "lever"
+  | "ashby"
+  | "rss"
+  | "generic_json"
+  | "static_html"
+  | "dynamic_html"
+  | "demo";
 export type Seniority =
   | "intern"
   | "junior"
@@ -254,6 +263,7 @@ export interface ActionAccepted {
 }
 
 export interface Problem {
+  type?: string;
   title: string;
   status: number;
   detail: string;

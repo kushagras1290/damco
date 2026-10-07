@@ -8,6 +8,7 @@ from jobpulse_core.domain.models import SourceDefinition, SourceKind
 from jobpulse_core.ingestion.http import SafeHttpClient
 from jobpulse_core.sources.ats import AshbySource, GreenhouseSource, LeverSource
 from jobpulse_core.sources.base import BaseSource, JobSource
+from jobpulse_core.sources.demo import DemoSource
 from jobpulse_core.sources.web import (
     DynamicHTMLSource,
     GenericJSONSource,
@@ -33,6 +34,8 @@ _ATS_HOSTS: dict[SourceKind, str] = {
 
 
 def build_source(definition: SourceDefinition, http: SafeHttpClient) -> JobSource:
+    if definition.kind is SourceKind.DEMO:
+        return DemoSource(definition)  # no network access
     adapter = _ADAPTERS[definition.kind](definition, http)
     if not isinstance(adapter, JobSource):  # pragma: no cover - structural guarantee
         msg = f"{type(adapter).__name__} does not satisfy JobSource"

@@ -63,3 +63,18 @@ test("proxy refuses paths outside the allowlist", async ({ page }) => {
   const response = await page.request.get("/api/backend/health/ready");
   expect(response.status()).toBe(404);
 });
+
+test("live activity streams pipeline events into the dashboard", async ({ page }) => {
+  // Needs the demo board (scripts/demo.py), which releases postings every ~60 s.
+  test.setTimeout(150_000);
+  await page.goto("/dashboard");
+  await expect(page.getByTestId("live-status").first()).toHaveText("Live", { timeout: 20_000 });
+  await expect(page.getByTestId("live-feed").first().getByRole("listitem").first()).toBeVisible({ timeout: 120_000 });
+});
+
+test("API responses expose rate-limit headers through the proxy", async ({ page }) => {
+  const response = await page.request.get("/api/backend/jobs?limit=1");
+  expect(response.status()).toBe(200);
+  expect(Number(response.headers()["ratelimit-limit"])).toBeGreaterThan(0);
+  expect(response.headers()["ratelimit-remaining"]).toBeDefined();
+});

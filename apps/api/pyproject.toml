@@ -22,6 +22,7 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi>=0.66b0",
     "sentry-sdk[fastapi]>=2.71",
     "boto3>=1.43",
+    "redis>=8.1",
 ]
 
 [tool.uv.sources]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -53,7 +53,7 @@ def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSessi
 
 
 @asynccontextmanager
-async def transaction(factory: async_sessionmaker[AsyncSession]) -> AsyncIterator[AsyncSession]:
+async def transaction(factory: async_sessionmaker[AsyncSession]) -> AsyncGenerator[AsyncSession]:
     """Session bound to one transaction: commit on success, rollback on any error."""
     async with factory() as session, session.begin():
         yield session

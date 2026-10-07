@@ -12,7 +12,10 @@
 | CSRF | SameSite=Lax session cookie plus an exact same-origin check on every proxied write |
 | Path traversal | Proxy path allowlist + segment regex; snapshot keys validated and resolved inside the storage root |
 | SQL injection | SQLAlchemy expressions only (parameterised) |
-| Abuse | Per-IP token-bucket rate limit, 256 KB request body limit (declared and streamed), Pydantic `extra="forbid"` on inputs |
+| Abuse | Redis-shared sliding-window limits keyed by verified owner, signed anonymous visitor (`visitor:` HMAC of the client IP - the API never sees the IP) or client IP; separate tighter buckets for writes and realtime stream connects; per-instance fallback if Redis is down. 256 KB request body limit (declared and streamed), 30 s request deadline, max concurrent SSE clients, Pydantic `extra="forbid"` on inputs |
+| Duplicate writes on retry | `Idempotency-Key` (client sends one per mutation and reuses it on retry): replay of the stored response, 409 while in flight, 422 on key reuse with a different body; scoped per caller; 503 rather than risking a duplicate when Redis is unavailable |
+| Spoofed client IPs | `X-Forwarded-For` is trusted only for an explicit number of proxy hops (`TRUSTED_PROXY_COUNT` on the API, `TRUSTED_PROXY_HOPS` on the web, default 1 on Vercel, otherwise 0) |
+| Event stream data leaks | Events carry only ids, titles, companies and scores that public-demo readers can already see via the API; requires the same Reader auth as other endpoints |
 | Secrets | Environment only; config validated at startup (secret length ≥ 32); structlog redacts sensitive keys; no secrets in images |
 | Webhook spoofing | Payloads signed `HMAC-SHA256("{timestamp}.{body}")` in `X-JobPulse-Signature` |
 | robots.txt | Respected per RFC 9309 (4xx = allow, 5xx = disallow and retry later) |
@@ -20,14 +23,18 @@
 ## HTTP hardening
 Web: per-request nonce CSP (`script-src 'nonce-…' 'strict-dynamic'`, no inline scripts), HSTS, frame-ancestors none.
 API: `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, restrictive CSP,
-`Cache-Control: no-store`, HSTS in production, CORS allowlist without credentials, docs disabled
-in production. Web: CSP, frame-ancestors none, `poweredByHeader` off.
+`Cache-Control: no-store`, HSTS in production, **deny-by-default CORS** (browsers only reach the
+API through the same-origin web proxy; exact-origin allowlist, no wildcard in production, no
+credentials), docs disabled in production. Web: CSP, frame-ancestors none, `poweredByHeader` off.
 
 ## Known residual risks
 - **DNS rebinding TOCTOU**: the IP is validated before httpx connects; a hostile resolver could
   return a different address on the second lookup. Mitigated by the host allowlist (on by default).
 - Inline *style attributes* are allowed by the CSP (charts set widths); scripts are nonce-only.
-- In-process rate limiting is per instance.
+- Rate limits fall back to per-instance windows while Redis is down (bounded, logged and
+  exposed as `rate_limit_backend_fallbacks_total`).
+- Visitor buckets rely on the platform's client-IP header; behind an untrusted proxy all
+  anonymous visitors share the web server's IP bucket (safe, but coarser).
 
 ## CI scanning
 Gitleaks, Semgrep, CodeQL (Python + TS), Trivy (filesystem and images), pip-audit, pnpm audit.

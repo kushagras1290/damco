@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import copy
 import json
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -17,9 +20,11 @@ from jobpulse.db.session import transaction
 from jobpulse.repositories.jobs import JobFilters, JobRepository
 from jobpulse.repositories.profiles import ProfileRepository
 from jobpulse.repositories.sources import SourceRepository
-from jobpulse.seed import apply_seed, load_seed
+from jobpulse.seed import apply_seed, load_seed, start_polling
 from jobpulse.services.context import AppContext
 from jobpulse.services.evaluation import EvaluationService
+from jobpulse.services.event_hub import EventHub
+from jobpulse.services.events import EventType, publish
 from jobpulse.services.ingestion import IngestionService
 from jobpulse_core.contracts import JobRef, PollRecord
 from jobpulse_core.domain.models import SourceDefinition, SourceKind
@@ -196,11 +201,20 @@ async def test_seed_is_idempotent(ctx: AppContext) -> None:
     seed = load_seed(SEED_FILE)
     first = await apply_seed(ctx, seed)
     second = await apply_seed(ctx, seed)
-    assert first == (True, len(seed.sources))
-    assert second == (True, 0)
+    assert first.profile_updated
+    assert len(first.created_source_ids) == len(seed.sources)
+    assert second.created_source_ids == []
+    assert sorted(second.enabled_source_ids) == sorted(first.created_source_ids)  # still ensured
     async with transaction(ctx.sessions) as session:
         profile = await ProfileRepository(session).get_or_create_primary()
     assert "Python" in profile.skills
+
+
+async def test_seed_polling_start_is_best_effort(ctx: AppContext) -> None:
+    result = await apply_seed(ctx, load_seed(SEED_FILE))
+    offline = replace(ctx, settings=ctx.settings.model_copy(update={"temporal_address": "127.0.0.1:1"}))
+    assert await start_polling(offline, []) == 0
+    assert await start_polling(offline, result.created_source_ids) == 0  # deferred to worker boot, no crash
 
 
 async def test_unchanged_listing_snapshot_is_stored_once(ctx: AppContext) -> None:
@@ -249,3 +263,54 @@ async def test_llm_daily_limit_degrades_enrichment(ctx: AppContext) -> None:
     result = await service.enrich(ref, "wf")
     assert result.proceed
     assert result.detail == "llm daily request limit reached"
+
+
+async def _collect(hub: EventHub, until_type: str) -> list[dict[str, object]]:
+    received: list[dict[str, object]] = []
+    async with hub.subscribe() as subscription:
+        async with asyncio.timeout(10):
+            while True:
+                event = json.loads(await subscription.queue.get())
+                received.append(event)
+                if event["type"] == until_type:
+                    return received
+
+
+async def test_events_are_delivered_only_after_commit(ctx: AppContext) -> None:
+    hub = EventHub(ctx.settings.realtime_dsn, max_clients=5, queue_size=50)
+    await hub.start()
+    try:
+        async with asyncio.timeout(10):
+            await hub.wait_connected()
+        collector = asyncio.create_task(_collect(hub, "job.matched"))
+        await asyncio.sleep(0.1)
+        with contextlib.suppress(RuntimeError):
+            async with transaction(ctx.sessions) as session:
+                await publish(session, EventType.JOB_EVALUATED, {"job_id": "rolled-back"})
+                raise RuntimeError  # rollback: must never be delivered
+        async with transaction(ctx.sessions) as session:
+            await publish(session, EventType.JOB_MATCHED, {"job_id": "committed", "score": 0.91})
+        events = await collector
+        assert [e["data"]["job_id"] for e in events] == ["committed"]  # type: ignore[index]
+    finally:
+        await hub.stop()
+
+
+async def test_discovery_publishes_realtime_events(ctx: AppContext) -> None:
+    hub = EventHub(ctx.settings.realtime_dsn, max_clients=5, queue_size=100)
+    await hub.start()
+    try:
+        async with asyncio.timeout(10):
+            await hub.wait_connected()
+        source_id = await create_source(ctx)
+        collector = asyncio.create_task(_collect(hub, "jobs.discovered"))
+        await asyncio.sleep(0.1)
+        await discover(ctx, source_id, load_fixture("greenhouse/board.json"))
+        events = await collector
+    finally:
+        await hub.stop()
+    stages = [e["data"].get("stage") for e in events]  # type: ignore[union-attr]
+    assert stages[:2] == ["fetching", "fetched"]
+    discovered = events[-1]["data"]
+    assert discovered["new"] == 2  # type: ignore[index]
+    assert {job["title"] for job in discovered["jobs"]} >= {"Staff Backend Engineer"}  # type: ignore[index]
