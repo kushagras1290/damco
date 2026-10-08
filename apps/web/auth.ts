@@ -37,6 +37,12 @@ async function verifyEmailLink(env: ServerEnv, token: unknown): Promise<{ id: st
   return { id: body.subject, email: body.email };
 }
 
+/** A readable handle for email sign-ins (the API only accepts [A-Za-z0-9-]{1,39} logins). */
+function displayLoginFromEmail(email: string | null | undefined): string | undefined {
+  const local = email?.split("@")[0]?.replace(/[^A-Za-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 39);
+  return local || undefined;
+}
+
 function providers(env: ServerEnv): Provider[] {
   const list: Provider[] = [];
   if (githubConfigured(env)) {
@@ -82,7 +88,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth(() => {
           if (!identity) throw new Error("unsupported sign-in provider");
           token.provider = identity.provider;
           token.subject = identity.subject;
-          token.login = typeof profile?.login === "string" ? profile.login : undefined;
+          token.login = typeof profile?.login === "string" ? profile.login : displayLoginFromEmail(user?.email);
         } else if (!token.provider && typeof token.githubId === "string") {
           // Sessions issued before multi-provider sign-in.
           token.provider = "github";

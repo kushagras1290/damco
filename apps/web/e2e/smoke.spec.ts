@@ -92,3 +92,22 @@ test("malformed invitation links are rejected", async ({ page }) => {
   const response = await page.goto("/invite/not-a-valid-token!");
   expect(response?.status()).toBe(404);
 });
+
+test("sign-in page offers OAuth and a one-time email link", async ({ page }) => {
+  await page.goto("/signin");
+  await expect(page.getByRole("heading", { name: "Sign in", exact: true })).toBeVisible();
+  await page.getByLabel("Email").fill(`e2e-${Date.now()}@example.com`);
+  await page.getByRole("button", { name: "Email me a sign-in link" }).click();
+  await expect(page.getByRole("status")).toContainText("Check your inbox");
+});
+
+test("invalid email links are refused", async ({ page }) => {
+  await page.goto(`/auth/email?token=${"x".repeat(43)}`);
+  await expect(page.getByText("invalid, expired or already used")).toBeVisible({ timeout: 15_000 });
+});
+
+test("sign-in callback never redirects off-site", async ({ page }) => {
+  const response = await page.goto("/signin?callbackUrl=https://evil.example/steal");
+  expect(response?.status()).toBe(200);
+  await expect(page.getByRole("button", { name: "Email me a sign-in link" })).toBeVisible();
+});

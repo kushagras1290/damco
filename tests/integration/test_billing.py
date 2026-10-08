@@ -156,6 +156,9 @@ async def test_reevaluation_quota(redis_settings: Settings, ctx: AppContext) -> 
     async with api_for(redis_settings, ctx) as client:
         bob = user(BOB)
         await client.get("/api/v1/me", headers=bob)  # personal free workspace (20 per day)
+        # Bob must follow the board to see (and re-evaluate) its jobs.
+        followed = await client.post("/api/v1/sources", json=board("acme"), headers=bob)
+        assert followed.status_code == 201, followed.text
         statuses = [(await client.post(f"/api/v1/jobs/{job_id}/evaluate", headers=bob)).status_code for _ in range(21)]
     assert statuses[:20] == [202] * 20
     assert statuses[20] == 402

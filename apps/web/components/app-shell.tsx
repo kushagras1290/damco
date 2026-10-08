@@ -31,7 +31,7 @@ export async function AppShell({ children }: { children: ReactNode }) {
           <div className="flex items-center gap-2 md:mt-2 md:flex-col md:items-stretch">
             {user ? (
               <>
-                <span className="truncate text-xs text-muted-foreground">Signed in as {user.login ?? user.name}</span>
+                <span className="truncate text-xs text-muted-foreground">Signed in as {user.login ?? user.name ?? user.email ?? "you"}</span>
                 <WorkspaceSwitcher />
                 <form action={logout}>
                   <Button variant="ghost" size="sm" className="w-full justify-start" type="submit">

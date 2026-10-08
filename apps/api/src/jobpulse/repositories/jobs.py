@@ -18,12 +18,22 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from jobpulse.db.models import Company, Job, JobVersion, ProfileJob, RawSnapshot, Source
+from jobpulse.db.models import Company, Job, JobVersion, ProfileJob, RawSnapshot, Source, SourceSubscription
 from jobpulse_core.domain.models import NormalizedJob
 
 TRIGRAM_DUPLICATE_THRESHOLD = 0.85
 SortKey = Literal["score", "published", "discovered"]
 PENDING = "pending"
+
+
+def followed_sources() -> Select[uuid.UUID]:
+    """Boards the current workspace follows (subscriptions are RLS-scoped to the workspace)."""
+    return select(SourceSubscription.source_id)
+
+
+def visible_to_workspace() -> ColumnElement[bool]:
+    """Catalogue jobs a workspace may see: those from boards it follows."""
+    return Job.source_id.in_(followed_sources())
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,11 +84,16 @@ class JobRepository:
             statement = statement.with_for_update()
         return (await self._session.execute(statement)).scalar_one_or_none()
 
+    async def get_visible(self, job_id: uuid.UUID) -> Job | None:
+        """API lookups: only jobs from boards the workspace follows."""
+        statement = select(Job).where(Job.id == job_id, visible_to_workspace())
+        return (await self._session.execute(statement)).scalar_one_or_none()
+
     async def get_detail(self, job_id: uuid.UUID) -> Job | None:
         statement = (
             select(Job)
             .options(joinedload(Job.company), joinedload(Job.source).joinedload(Source.company))
-            .where(Job.id == job_id)
+            .where(Job.id == job_id, visible_to_workspace())
         )
         return (await self._session.execute(statement)).unique().scalar_one_or_none()
 
@@ -105,7 +120,7 @@ class JobRepository:
             .outerjoin(ProfileJob, and_(ProfileJob.job_id == Job.id, ProfileJob.profile_id == profile_id))
             .options(joinedload(Job.company), joinedload(Job.source).joinedload(Source.company))
         )
-        conditions = []
+        conditions = [visible_to_workspace()]
         if filters.query:
             ts_query = func.websearch_to_tsquery("english", filters.query)
             conditions.append(
@@ -155,7 +170,7 @@ class JobRepository:
             select(status, func.count(Job.id))
             .select_from(Job)
             .outerjoin(ProfileJob, and_(ProfileJob.job_id == Job.id, ProfileJob.profile_id == profile_id))
-            .where(Job.closed_at.is_(None), Job.duplicate_of_id.is_(None))
+            .where(Job.closed_at.is_(None), Job.duplicate_of_id.is_(None), visible_to_workspace())
             .group_by(status)
         )
         return {row[0]: int(row[1]) for row in (await self._session.execute(statement)).all()}
@@ -174,7 +189,12 @@ class JobRepository:
 
     async def discovered_per_day(self, since: datetime) -> list[tuple[datetime, int]]:
         day = func.date_trunc("day", Job.first_seen_at)
-        statement = select(day, func.count(Job.id)).where(Job.first_seen_at >= since).group_by(day).order_by(day)
+        statement = (
+            select(day, func.count(Job.id))
+            .where(Job.first_seen_at >= since, visible_to_workspace())
+            .group_by(day)
+            .order_by(day)
+        )
         return [(row[0], int(row[1])) for row in (await self._session.execute(statement)).all()]
 
     async def find_duplicate(
@@ -211,7 +231,7 @@ class JobRepository:
         statement = (
             select(Job, similarity)
             .options(joinedload(Job.company))
-            .where(Job.id != job.id, Job.normalized_title.op("%")(job.normalized_title))
+            .where(Job.id != job.id, Job.normalized_title.op("%")(job.normalized_title), visible_to_workspace())
             .order_by(similarity.desc())
             .limit(limit)
         )

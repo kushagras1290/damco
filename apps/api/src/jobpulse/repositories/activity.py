@@ -7,12 +7,21 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from jobpulse.db.models import Application, AuditEvent, Job, WorkflowRun
+from jobpulse.db.models import Application, AuditEvent, Job, SourceSubscription, WorkflowRun
+
+
+def _visible_run() -> ColumnElement[bool]:
+    """Evaluation runs are RLS-scoped to their workspace; catalogue runs (no workspace) are
+    shown only for boards the current workspace follows."""
+    return or_(
+        WorkflowRun.workspace_id.is_not(None),
+        WorkflowRun.source_id.in_(select(SourceSubscription.source_id)),
+    )
 
 
 class WorkflowRunRepository:
@@ -63,7 +72,8 @@ class WorkflowRunRepository:
         await self._session.flush()
 
     async def get(self, run_id: uuid.UUID) -> WorkflowRun | None:
-        return await self._session.get(WorkflowRun, run_id)
+        statement = select(WorkflowRun).where(WorkflowRun.id == run_id, _visible_run())
+        return (await self._session.execute(statement)).scalar_one_or_none()
 
     async def list(
         self,
@@ -74,8 +84,8 @@ class WorkflowRunRepository:
         limit: int,
         offset: int,
     ) -> tuple[Sequence[WorkflowRun], int]:
-        statement = select(WorkflowRun)
-        count = select(func.count(WorkflowRun.id))
+        statement = select(WorkflowRun).where(_visible_run())
+        count = select(func.count(WorkflowRun.id)).where(_visible_run())
         for column, value in (
             (WorkflowRun.workflow_type, workflow_type),
             (WorkflowRun.status, status),
@@ -95,7 +105,7 @@ class WorkflowRunRepository:
     async def status_counts(self, since: datetime) -> dict[str, int]:
         statement = (
             select(WorkflowRun.status, func.count(WorkflowRun.id))
-            .where(WorkflowRun.started_at >= since)
+            .where(WorkflowRun.started_at >= since, _visible_run())
             .group_by(WorkflowRun.status)
         )
         return {row[0]: int(row[1]) for row in (await self._session.execute(statement)).all()}

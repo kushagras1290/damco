@@ -26,6 +26,7 @@ from jobpulse.services.evaluation import EvaluationService, ProfileNotFoundError
 from jobpulse.services.ingestion import IngestionService
 from jobpulse_core.contracts import JobRef
 from jobpulse_core.domain.models import EligibilityPolicy, RemotePolicy
+from tests.auth_helpers import make_token
 from tests.conftest import load_fixture
 from tests.integration.test_pipeline import create_source, discover
 
@@ -172,3 +173,26 @@ async def test_api_only_exposes_its_own_workspace(settings: Settings, ctx: AppCo
     assert decisions["total"] == 0
     assert sources["total"] == 1  # the catalogue source is shared (Default follows it too) ...
     assert sources["items"][0]["open_jobs"] >= 1  # ... but none of Bob's verdicts or applications leak
+
+
+async def test_workspaces_only_see_catalogue_from_boards_they_follow(settings: Settings, ctx: AppContext) -> None:
+    source_id = await create_source(ctx)  # followed by the Default workspace only
+    stored = await discover(ctx, source_id, load_fixture("greenhouse/board.json"))
+    job_id = stored.jobs_to_evaluate[0]  # type: ignore[attr-defined]
+    app = create_app(settings)
+    app.dependency_overrides[get_ctx] = lambda: ctx
+    stranger = {"Authorization": f"Bearer {make_token(7777, login='stranger')}"}  # gets a fresh personal workspace
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            follower_jobs = (await client.get("/api/v1/jobs")).json()  # anonymous = Default workspace
+            stranger_jobs = (await client.get("/api/v1/jobs", headers=stranger)).json()
+            stranger_dashboard = (await client.get("/api/v1/dashboard", headers=stranger)).json()
+            stranger_detail = await client.get(f"/api/v1/jobs/{job_id}", headers=stranger)
+            stranger_snapshot = await client.get(f"/api/v1/jobs/{job_id}/snapshot", headers=stranger)
+    assert follower_jobs["total"] >= 1
+    assert stranger_jobs["total"] == 0
+    assert sum(stranger_dashboard["jobs_by_status"].values()) == 0
+    assert stranger_dashboard["discovered_per_day"] == []
+    assert stranger_detail.status_code == 404
+    assert stranger_snapshot.status_code == 404

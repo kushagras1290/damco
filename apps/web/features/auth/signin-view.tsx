@@ -2,6 +2,7 @@
 
 import { Mail } from "lucide-react";
 import { signIn } from "next-auth/react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 
@@ -75,17 +76,28 @@ export function EmailLinkSignIn({ token }: { token: string }) {
   useEffect(() => {
     if (started.current) return; // single use: never submit the token twice
     started.current = true;
-    void signIn("email-link", { token, redirect: false }).then((result) => {
-      if (result?.error) setFailed(true);
-      else {
+    // A rejected link may surface as an error result OR as a thrown error (Auth.js parses its
+    // error-page URL); either way the user must see the failure, never an endless spinner.
+    signIn("email-link", { token, redirect: false })
+      .then((result) => {
+        if (!result || result.error || !result.ok) {
+          setFailed(true);
+          return;
+        }
         router.replace("/dashboard");
         router.refresh();
-      }
-    });
+      })
+      .catch(() => setFailed(true));
   }, [token, router]);
 
   return failed ? (
-    <ErrorState error={new Error("This sign-in link is invalid, expired or already used. Request a new one.")} />
+    <div role="alert" className="max-w-md rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+      This sign-in link is invalid, expired or already used.{" "}
+      <Link href="/signin" className="font-medium underline">
+        Request a new one
+      </Link>
+      .
+    </div>
   ) : (
     <p className="text-sm text-muted-foreground">Signing you in…</p>
   );

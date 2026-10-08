@@ -122,7 +122,8 @@ async def get_job(job_id: uuid.UUID, _: Viewer, session: Session, profile: Activ
 
 @router.get("/{job_id}/snapshot", response_model=SnapshotContent)
 async def get_snapshot(job_id: uuid.UUID, _: Viewer, session: Session, ctx: Ctx) -> SnapshotContent:
-    snapshot = await JobRepository(session).latest_snapshot(job_id)
+    jobs = JobRepository(session)
+    snapshot = await jobs.latest_snapshot(job_id) if await jobs.get_visible(job_id) else None
     if snapshot is None:
         raise NotFoundError("no snapshot for job")
     raw = (await ctx.store.get(snapshot.snapshot_key)).decode("utf-8", errors="replace")
@@ -144,7 +145,7 @@ async def rerun_job(
     ctx: Ctx,
     client: Temporal,
 ) -> ActionAccepted:
-    if await JobRepository(session).get(job_id) is None:
+    if await JobRepository(session).get_visible(job_id) is None:
         raise NotFoundError("job not found")
     workspace = account.require(WorkspaceRole.MEMBER)
     await consume_daily_quota(
@@ -178,7 +179,7 @@ async def create_application(
     session: Session,
     profile: ActiveProfile,
 ) -> ApplicationOut:
-    if await JobRepository(session).get(job_id) is None:
+    if await JobRepository(session).get_visible(job_id) is None:
         raise NotFoundError("job not found")
     application = await ApplicationRepository(session).upsert(
         job_id=job_id,
