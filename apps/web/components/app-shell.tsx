@@ -1,22 +1,16 @@
 import { LogIn, LogOut, Zap } from "lucide-react";
 import type { ReactNode } from "react";
 
-import { auth, signIn, signOut } from "@/auth";
+import { auth, signOut } from "@/auth";
 import { LiveStatusBadge } from "@/components/live-events";
 import { NavLinks } from "@/components/nav-links";
 import { WorkspaceSwitcher } from "@/components/workspace-switcher";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/primitives";
-import { githubConfigured } from "@/lib/server-env";
+import Link from "next/link";
 
 export async function AppShell({ children }: { children: ReactNode }) {
   const session = await auth();
   const user = session?.user;
-
-  async function login() {
-    "use server";
-    await signIn("github");
-  }
 
   async function logout() {
     "use server";
@@ -45,14 +39,13 @@ export async function AppShell({ children }: { children: ReactNode }) {
                   </Button>
                 </form>
               </>
-            ) : githubConfigured() ? (
-              <form action={login}>
-                <Button variant="outline" size="sm" className="w-full" type="submit">
-                  <LogIn aria-hidden /> Sign in with GitHub
-                </Button>
-              </form>
             ) : (
-              <Badge>Public demo (read-only)</Badge>
+              <Link
+                href="/signin"
+                className="inline-flex h-8 w-full items-center justify-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
+              >
+                <LogIn aria-hidden className="size-4" /> Sign in
+              </Link>
             )}
             {user ? null : <WorkspaceSwitcher />}
           </div>

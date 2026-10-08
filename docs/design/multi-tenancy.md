@@ -123,7 +123,9 @@ simply one workspace.
 5. ✅ Plans and limits (boards, poll floor, seats, daily re-evaluations; 402 `plan_limit`),
    Razorpay subscriptions (hosted checkout, verified idempotent webhooks, 3-day grace,
    cancel at period end), platform-admin plan override. Stripe remains a second provider.
-6. Sign-up flow with Google, Microsoft Entra ID and email magic link; export/delete.
+6. ✅ Sign-in with GitHub, Google, Microsoft Entra ID or a one-time email link (API-issued,
+   single-use, 15 min, hashed, per-address throttled; no session database). Workspace
+   JSON export and confirmed deletion (cancels billing, stops orphaned board polling).
 
 ## Risks
 - **Fan-out cost**: N profiles × M new jobs evaluations. Mitigated by deterministic hard rules

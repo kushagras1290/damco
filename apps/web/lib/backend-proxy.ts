@@ -18,6 +18,7 @@ export const ALLOWED_ROOTS = new Set([
   "invitations",
   "billing",
   "admin",
+  "auth",
 ]);
 export const ALLOWED_METHODS = new Set(["GET", "POST", "PATCH", "DELETE"]);
 export { WORKSPACE_COOKIE } from "@/lib/workspace-cookie";

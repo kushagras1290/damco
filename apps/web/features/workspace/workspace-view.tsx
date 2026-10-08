@@ -1,7 +1,7 @@
 "use client";
 
 import { useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Link2, Plus, Trash2, UserMinus } from "lucide-react";
+import { Check, Copy, Download, Link2, Plus, Trash2, UserMinus } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { type FormEvent, useState } from "react";
 
@@ -17,6 +17,7 @@ import {
   useCheckout,
   useChangeMemberRole,
   useCreateWorkspace,
+  useDeleteWorkspace,
   useInvitations,
   useInvite,
   useMe,
@@ -289,6 +290,57 @@ function BillingCard({ isOwner }: { isOwner: boolean }) {
   );
 }
 
+function DataCard({ name, canDelete }: { name: string; canDelete: boolean }) {
+  const remove = useDeleteWorkspace();
+  const client = useQueryClient();
+  const router = useRouter();
+  const [confirm, setConfirm] = useState("");
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Your data</CardTitle>
+        <CardDescription>Export everything this workspace owns, or delete it permanently.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <a
+          href="/api/backend/workspace/export"
+          download
+          className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
+        >
+          <Download aria-hidden className="size-4" /> Export as JSON
+        </a>
+        {canDelete ? (
+          <div className="space-y-2 rounded-md border border-destructive/30 p-3">
+            <p className="text-sm">
+              Deleting removes profiles, decisions, applications and members for good. Type <strong>{name}</strong> to
+              confirm.
+            </p>
+            <div className="flex gap-2">
+              <Input value={confirm} onChange={(event) => setConfirm(event.target.value)} aria-label="Confirm workspace name" />
+              <Button
+                variant="destructive"
+                disabled={confirm !== name || remove.isPending}
+                onClick={() =>
+                  remove.mutate(confirm, {
+                    onSuccess: () => {
+                      client.clear();
+                      router.push("/dashboard");
+                      router.refresh();
+                    },
+                  })
+                }
+              >
+                <Trash2 aria-hidden /> Delete
+              </Button>
+            </div>
+            {remove.error ? <ErrorState error={remove.error} /> : null}
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 function CreateWorkspaceCard() {
   const create = useCreateWorkspace();
   const switchTo = useSwitchTo();
@@ -378,6 +430,7 @@ export function WorkspaceView() {
         {isAdmin ? <InviteCard isOwner={isOwner} /> : null}
         <div className="grid content-start gap-4">
           {isOwner && me.workspace ? <RenameCard name={me.workspace.name} /> : null}
+          {isOwner && me.workspace ? <DataCard name={me.workspace.name} canDelete={me.workspace.slug !== "default"} /> : null}
           <CreateWorkspaceCard />
         </div>
       </div>

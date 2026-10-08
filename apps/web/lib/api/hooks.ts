@@ -2,7 +2,7 @@
 
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { api, type QueryParams } from "@/lib/api/client";
+import { ApiError, api, type QueryParams } from "@/lib/api/client";
 import { fallbackRefetchInterval } from "@/lib/stores/live-feed";
 import type {
   ActionAccepted,
@@ -19,6 +19,7 @@ import type {
   Me,
   Member,
   Page,
+  Problem,
   Profile,
   Run,
   SnapshotContent,
@@ -252,3 +253,19 @@ export function useCancelSubscription() {
     onSuccess: () => client.invalidateQueries({ queryKey: ["workspace", "billing"] }),
   });
 }
+
+export const useDeleteWorkspace = () =>
+  useMutation({
+    mutationFn: async (confirmName: string) => {
+      const response = await fetch("/api/backend/workspace", {
+        method: "DELETE",
+        headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
+        body: JSON.stringify({ confirm_name: confirmName }),
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        const problem = (await response.json().catch(() => null)) as Problem | null;
+        throw new ApiError(response.status, problem);
+      }
+    },
+  });

@@ -1,9 +1,12 @@
 import type { DefaultSession } from "next-auth";
 
+import type { IdentityProvider } from "@/lib/identity";
+
 declare module "next-auth" {
   interface Session {
     user: {
-      githubId?: string;
+      provider?: IdentityProvider;
+      subject?: string;
       login?: string;
     } & DefaultSession["user"];
   }
@@ -16,7 +19,10 @@ declare module "next-auth" {
 // Auth.js v5: the JWT interface is declared in @auth/core (re-exported by next-auth/jwt).
 declare module "@auth/core/jwt" {
   interface JWT {
-    githubId?: string;
+    provider?: string;
+    subject?: string;
     login?: string;
+    /** Legacy (pre multi-provider) sessions. */
+    githubId?: string;
   }
 }

@@ -9,13 +9,13 @@ import {
   backendPath,
   clientIp,
   forwardedRequestHeaders,
-  githubSubject,
   isSameOrigin,
   mintBackendToken,
   passthroughResponseHeaders,
   selectedWorkspace,
   visitorSubject,
 } from "@/lib/backend-proxy";
+import { backendSubjectOf, identityFor, authProviderOf } from "@/lib/identity";
 import { log } from "@/lib/log";
 import { type ServerEnv, serverEnv, trustedProxyHops } from "@/lib/server-env";
 
@@ -37,7 +37,8 @@ function problem(status: number, detail: string): NextResponse {
  *  (only when the client IP is trustworthy - otherwise no token: the API sees our IP). */
 async function backendSubject(request: NextRequest, env: ServerEnv): Promise<{ subject: string; login?: string } | null> {
   const session = await auth();
-  if (session?.user?.githubId) return { subject: githubSubject(session.user.githubId), login: session.user.login };
+  const identity = session?.user?.provider && session.user.subject ? identityFor(authProviderOf(session.user.provider), session.user.subject) : null;
+  if (identity) return { subject: backendSubjectOf(identity), login: session?.user?.login };
   const ip = clientIp(request.headers.get("x-forwarded-for"), trustedProxyHops(env));
   return ip ? { subject: await visitorSubject(ip, env.AUTH_SECRET) } : null;
 }

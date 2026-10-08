@@ -18,7 +18,7 @@ export default async function Page({ params }: Props) {
   return (
     <>
       <PageHeader title="Invitation" description="Accept to join the workspace with the role you were invited to." />
-      <AcceptInvitation token={token} signedIn={Boolean(session?.user?.githubId)} />
+      <AcceptInvitation token={token} signedIn={Boolean(session?.user?.subject)} />
     </>
   );
 }

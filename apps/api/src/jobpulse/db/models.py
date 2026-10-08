@@ -106,6 +106,18 @@ class Workspace(Base):
     )
 
 
+class EmailLoginToken(Base):
+    """Single-use magic-link token (only its SHA-256 is stored), valid for 15 minutes."""
+
+    __tablename__ = "email_login_tokens"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str] = mapped_column(String(320))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _created()
+
+
 class BillingEvent(Base):
     """Every verified provider webhook, once (PK = provider event id): idempotent processing."""
 

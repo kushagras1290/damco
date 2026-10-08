@@ -33,7 +33,7 @@ describe("serverEnvSchema", () => {
   it.each([
     [{ AUTH_URL: "http://jobpulse.example" }, "AUTH_URL must be an https:// URL in production"],
     [{ API_BASE_URL: "http://api.internal" }, "API_BASE_URL must be https:// in production"],
-    [{ AUTH_GITHUB_ID: "", AUTH_GITHUB_SECRET: "" }, "GitHub OAuth is required in production"],
+    [{ AUTH_GITHUB_ID: "", AUTH_GITHUB_SECRET: "" }, "configure at least one OAuth provider in production"],
   ])("rejects unsafe production config %j", (override, message) => {
     expect(issues({ ...PRODUCTION, ...override })).toContain(message);
   });

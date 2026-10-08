@@ -26,6 +26,7 @@ from jobpulse.api.routes import (
     decisions,
     events,
     jobs,
+    lifecycle,
     profile,
     runs,
     sources,
@@ -70,6 +71,7 @@ ROUTERS = (
     events.router,
     workspaces.router,
     billing.router,
+    lifecycle.router,
     system.router,
 )
 
