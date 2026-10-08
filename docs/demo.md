@@ -41,7 +41,18 @@ All Demo board companies use reserved `.example` domains.
 
 ### Choose the honest AI path
 
-Check the System page before recording.
+For the strongest recording, set `OPENAI_API_KEY` in the untracked `.env` **before** starting
+the stack, then recreate the processes that read it:
+
+```bash
+docker compose up -d --force-recreate api worker
+curl -fsS http://localhost:8000/api/v1/system
+```
+
+Never show the key, `.env`, container environment or shell history on screen. Check the
+System page before recording and require `intelligence_enabled: true` for the AI segment.
+Also open the chosen ambiguous job once before recording and confirm its AI extraction card
+names a model and contains structured facts; configuration alone is not proof of a call.
 
 - If it says **intelligence enabled**, show `Backend Engineer, Fleet APIs` (or another job
   with an AI extraction card). Explain which deterministic fact was unknown and which
@@ -75,8 +86,9 @@ Use the first-person account from the README. Keep it concrete:
 
 > While applying for remote roles from India, I kept reopening separate career pages and
 > repeating the same five checks: work model, residency, location, experience and time-zone
-> overlap. Generic alerts still sent me US-only jobs and never explained why a role matched.
-> I built JobPulse to watch those boards continuously and make the decision trace visible.
+> overlap. A sweep of roughly 12 boards takes about 40 minutes, yet generic alerts still sent
+> me US-only jobs and never explained why a role matched. I built JobPulse to watch those
+> boards continuously and make the decision trace visible.
 
 Do not introduce SaaS, billing or deployment here. They do not help establish the problem.
 
@@ -186,7 +198,39 @@ Do not spend primary-demo time on checkout, invitations or the workspace switche
 make the submission look less focused and none is needed to demonstrate the core decision
 pipeline.
 
-## 5. Troubleshooting
+## 5. Live-discussion drill: defend the Phase 2 code
+
+Keep these answers short, then point to the implementation or test that proves each one.
+
+### How does RLS get the workspace?
+
+The token's optional `wid` is only a selection hint. The API resolves the authenticated
+subject and verifies its membership first. At the start of every database transaction,
+`apply_scope()` sends one statement containing transaction-local `set_config(..., true)`
+calls for `role`, `app.workspace_id` and `app.system_scope`. PostgreSQL RLS policies read
+those settings. Transaction-local scope works with pooled connections and disappears on
+commit or rollback, preventing one request's tenant from leaking into the next. The default
+no-scope state returns no tenant rows and rejects tenant writes.
+
+### Why does the role come from PostgreSQL instead of the token?
+
+The signed token proves identity, not current authorization. Membership roles can be
+revoked or changed while a short-lived token still exists, so trusting a role claim would
+leave stale privilege in circulation. JobPulse reads the workspace membership on every
+request; database state therefore takes effect immediately and the client cannot promote
+itself by choosing a different workspace or forging a role field.
+
+### What does the Razorpay webhook signature protect against?
+
+The public callback has no user session. JobPulse computes HMAC-SHA256 over the exact raw
+request body with the webhook secret and compares it with `X-Razorpay-Signature` using
+`hmac.compare_digest`. That rejects forged or modified subscription events before any plan
+change. A unique Razorpay event ID makes retries idempotent, and the resulting plan comes
+from the server-side Razorpay plan-ID mapping rather than untrusted `notes.plan` data. This
+path has automated integration coverage; real Razorpay credentials are not claimed as
+exercised.
+
+## 6. Troubleshooting
 
 | Symptom | Check |
 |---|---|

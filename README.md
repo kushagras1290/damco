@@ -4,15 +4,29 @@
 
 While applying for remote roles from India, I kept reopening separate company career pages
 and repeating the same five checks for every promising post: work model, residency,
-location, experience and time-zone overlap. Generic job alerts still surfaced US-only roles,
-did not explain why something matched, and could deliver a useful opening days late. I built
-JobPulse to do that repetitive monitoring continuously while keeping the final decision
-inspectable.
+location, experience and time-zone overlap. For scale, manually sweeping roughly 12 boards
+and checking each promising role takes about 40 minutes; generic alerts still surfaced
+US-only roles, did not explain why something matched, and could deliver a useful opening
+days late. I built JobPulse to do that repetitive monitoring continuously while keeping the
+final decision inspectable.
 
 JobPulse is an event-driven job opportunity radar. It discovers jobs from ATS boards and
 feeds, applies **deterministic hard-eligibility rules**, uses an LLM **only for ambiguous
 facts**, ranks matches with an **explainable** score, and notifies the user — with every
 decision auditable and replayable.
+
+## See the system, not just the source
+
+![Live dashboard showing the realtime activity feed, job counts, match distribution and rejection reasons](docs/assets/readme/dashboard-live.webp)
+
+| Explainable eligible decision | Deterministic failure |
+|---|---|
+| Every rule stores its outcome and quoted evidence; the final score remains decomposable. | A US-only, 8+ years role fails hard rules, skips ranking and cannot be rescued by AI. |
+| ![Eligible job with deterministic rule evidence, weighted match components and append-only decision trace](docs/assets/readme/job-decision-trace.webp) | ![Ineligible job with failed region, location and experience rules and no match score](docs/assets/readme/deterministic-fail.webp) |
+
+These are unedited captures from the seeded local demo. The companies and postings marked
+`demo` are synthetic and use reserved `.example` domains; the pipeline and UI are the same
+ones exercised by the integration and browser tests.
 
 ```
 Sources (Greenhouse · Lever · Ashby · RSS · JSON · HTML)
