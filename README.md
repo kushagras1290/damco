@@ -1,9 +1,18 @@
 # JobPulse
 
-Event driven AI job opportunity radar: discovers jobs from ATS boards and feeds, applies
-**deterministic hard-eligibility rules**, uses an LLM **only for ambiguous facts**, ranks
-matches with an **explainable** score, and notifies you — with every decision auditable and
-replayable.
+## Why I built it
+
+While applying for remote roles from India, I kept reopening separate company career pages
+and repeating the same five checks for every promising post: work model, residency,
+location, experience and time-zone overlap. Generic job alerts still surfaced US-only roles,
+did not explain why something matched, and could deliver a useful opening days late. I built
+JobPulse to do that repetitive monitoring continuously while keeping the final decision
+inspectable.
+
+JobPulse is an event-driven job opportunity radar. It discovers jobs from ATS boards and
+feeds, applies **deterministic hard-eligibility rules**, uses an LLM **only for ambiguous
+facts**, ranks matches with an **explainable** score, and notifies the user — with every
+decision auditable and replayable.
 
 ```
 Sources (Greenhouse · Lever · Ashby · RSS · JSON · HTML)
@@ -21,6 +30,41 @@ PostgreSQL 18 (pgvector · pg_trgm · FTS)  ──►  FastAPI  ──►  Next.
 Redis: shared rate limits · idempotency keys · response cache (ephemeral, fail-safe)
 ```
 
+## Scope and sequencing
+
+The submission's core problem is the personal job-search loop: discover a posting, decide
+whether it is actually applicable, explain the score, and notify once. That vertical slice
+was built first and is the focus of the [10-minute demo](docs/demo.md).
+
+Multi-tenant workspaces, row-level security, extra sign-in providers, plan limits and
+Razorpay are a clearly separated **Phase 2 product extension**. They prove how the same core
+could be shared safely, but they are not required to justify the original problem and are
+not part of the primary Damco walkthrough. Online payments and hosted production are not
+claimed as live.
+
+## Known limitations / what's broken
+
+- **No hosted demo yet.** Deployment manifests exist, but this repository has only been
+  exercised locally. Reviewers currently need `make demo`; see [Production deploy](#production-deploy-phase-2-opt-in).
+- **External providers are not live-verified.** OpenAI, Resend, Razorpay, Google and Microsoft
+  paths have automated or mocked coverage, but need real credentials and provider-side
+  configuration. Without OpenAI, evaluation deliberately continues in deterministic-only
+  mode and leaves unresolved facts marked for review.
+- **Closure detection assumes a full listing.** A feed that returns only recent items can
+  make an older open job appear closed. Those sources need a future incremental-feed mode;
+  today they should use a long interval and must not be treated as authoritative for closure.
+- **Redis degradation is weaker across replicas.** Reads continue with per-instance in-memory
+  rate limits and no shared cache when Redis is unavailable; the first requests can also pay
+  connection timeout cost before the circuit opens. Idempotent writes fail closed with 503
+  rather than risk a duplicate.
+- **The UI exposes one primary candidate profile per workspace.** The data model and worker
+  support multiple profiles, but the profile switcher and management UI are not built.
+- **The bundled Demo board is synthetic.** It makes the pipeline observable on demand; it is
+  not evidence of production traffic, user adoption or live-provider reliability.
+
+The full operational failure matrix is in [failure-modes.md](docs/failure-modes.md), and
+design compromises are in [tradeoffs.md](docs/tradeoffs.md).
+
 ## What is in the box
 
 | Area | Implementation |
@@ -28,11 +72,12 @@ Redis: shared rate limits · idempotency keys · response cache (ephemeral, fail
 | Domain core | `packages/python` — pure, framework-free: adapters, normalizer, eligibility engine, ranking, OpenAI client, notifications, polling policy |
 | API | `apps/api` — FastAPI, SQLAlchemy 2 async + psycopg 3, Alembic, structlog, Prometheus, OTel, Sentry |
 | Worker | `apps/worker` — Temporal workflows/activities, continue-as-new polling loops |
-| Web | `apps/web` — Next.js 16, React 19, Tailwind 4, shadcn-style UI, TanStack Query/Table v9, Zustand, RHF + Zod, Recharts, Auth.js (GitHub) |
+| Web | `apps/web` — Next.js 16, React 19, Tailwind 4, shadcn-style UI, TanStack Query/Table v9, Zustand, RHF + Zod, Recharts, Auth.js |
 | Data | PostgreSQL 18: UUIDv7 keys, pgvector HNSW, `pg_trgm` GIN, generated `tsvector` + GIN |
 | Realtime | Commit-coupled `pg_notify` → one LISTEN connection per API process → Server-Sent Events; live feed, match toasts, per-source sync status; polling only as fallback |
 | Production hardening | Redis sliding-window rate limits (per owner / visitor / IP, tiered reads·writes·streams, `RateLimit-*` headers), Stripe-style `Idempotency-Key`, short-TTL response cache, circuit breaker, request timeouts, gzip, deny-by-default CORS |
-| Ops | Docker multi-stage (non-root, read-only), Compose, GitHub Actions CI/CD, Render + Vercel + Neon + Temporal Cloud + R2 |
+| Phase 2 extension | Workspaces, PostgreSQL RLS, memberships, GitHub/Google/Microsoft/email sign-in, plan limits, Razorpay adapter, export/deletion |
+| Ops | Docker multi-stage (non-root, read-only), Compose, GitHub Actions CI; unverified deployment configuration for Render + Vercel + Neon + Temporal Cloud + R2 |
 
 ## Quick start (local)
 
@@ -57,7 +102,7 @@ make seed                       # demo profile + three public job boards
 - API docs → http://localhost:8000/docs
 - Temporal UI → http://localhost:8233
 
-**Owner access (GitHub sign-in):**
+**Optional write access for the seeded Default workspace (GitHub):**
 
 1. Register a **GitHub App** (preferred over a classic OAuth App: up to 10 callback URLs, so one
    app serves local + production, and it needs **no permissions**). This link pre-fills the form -
@@ -69,9 +114,12 @@ make seed                       # demo profile + three public job boards
 4. `docker compose up -d --force-recreate web`, sign in at http://localhost:3000, then open
    `/api/backend/me` - it should show `"role":"OWNER"`.
 
-Only allowlisted owners can sign in; everyone else uses the read-only public demo without an
-account. For production, add `https://<web-domain>/api/auth/callback/github` as an extra callback
-URL in the same app's settings.
+Everyone can inspect the read-only public demo without an account. `OWNER_GITHUB_IDS` is a
+platform-admin bootstrap allowlist; normal workspace roles are read from PostgreSQL on every
+request. Open sign-up can also use a local email link, and Google/Microsoft become available
+only when their optional credentials are configured. None of those Phase 2 providers is needed
+for the core demo. For production, add `https://<web-domain>/api/auth/callback/github` as an
+extra callback URL in the same app's settings.
 
 **AI enrichment** is optional. Without `OPENAI_API_KEY`, JobPulse runs in deterministic-only
 mode: hard rules and keyword skill matching still work; unknown rules remain flagged for review.
@@ -93,9 +141,12 @@ Versioned REST under `/api/v1`: `jobs`, `jobs/{id}` (full decision trace), `jobs
 `jobs/{id}/evaluate`, `jobs/{id}/applications`, `sources` (+ `PATCH`, `/sync`), `runs`, `profile`,
 `applications`, `decisions`, `dashboard`, `system`, `me`. Probes: `/health/live`, `/health/ready`, `/metrics`.
 
-Writes require the `OWNER` role. The web app mints short-lived Ed25519 tokens server-side; the API
-verifies them with public keys only and decides the role itself from `OWNER_GITHUB_IDS`
-([ADR 0006](docs/adr/0006-authentication-and-authorization.md)). Anonymous callers are
+Mutations require an authenticated workspace role appropriate to the action (member, admin or
+owner). The web app mints short-lived Ed25519 tokens server-side; the API verifies them with
+public keys only, verifies the selected workspace, and resolves the caller's role from workspace
+membership. `OWNER_GITHUB_IDS` grants platform-admin bootstrap access; it is not the tenant
+authorization model ([ADR 0006](docs/adr/0006-authentication-and-authorization.md),
+[ADR 0008](docs/adr/0008-multi-tenancy-with-row-level-security.md)). Anonymous callers are
 `PUBLIC_DEMO` (read-only). Errors are RFC 9457 `application/problem+json`.
 
 ## How a decision is made
@@ -109,7 +160,7 @@ verifies them with public keys only and decides the role itself from `OWNER_GITH
    0.10 freshness`; missing components are re-weighted transparently; every component is stored.
 4. **Notification** — once per job content version per channel (idempotent dedupe key).
 
-## Production deploy (opt-in)
+## Production deploy (Phase 2, opt-in)
 
 `.github/workflows/deploy.yml` runs after a green CI on `main` only when the repository
 variable `DEPLOY_ENABLED=true` is set. Before enabling it, provision Neon, Temporal Cloud,
@@ -117,6 +168,9 @@ Cloudflare R2, Render (`render.yaml`) and Vercel, then add the `production` envi
 secrets: `DATABASE_URL`, `RENDER_API_KEY`, `RENDER_API_SERVICE_ID`,
 `RENDER_WORKER_SERVICE_ID`, `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, and the
 variables `PRODUCTION_API_URL` / `PRODUCTION_WEB_URL` for smoke tests.
+
+This configuration has **not** been exercised against a live production environment. Enabling
+it provisions or mutates external services and is intentionally left to the repository owner.
 
 ## Documentation
 

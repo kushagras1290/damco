@@ -24,6 +24,21 @@ async def test_releases_incrementally_and_keeps_released_jobs_open() -> None:
     assert [j.external_id for j in second.jobs[:INITIAL_RELEASE]] == [j.external_id for j in first.jobs]
 
 
+async def test_first_release_includes_an_ambiguous_ai_showcase() -> None:
+    """The recorded demo can show the rules-to-enrichment handoff without waiting 5+ polls."""
+    async with SafeHttpClient(HttpClientConfig()) as http:
+        first = await build_source(DEMO, http).discover(SourceCheckpoint())
+
+    raw = next(job for job in first.jobs if job.external_id == "lm-013")
+    result = evaluate(normalize_job(raw), EligibilityPolicy())
+
+    assert result.needs_enrichment
+    assert {rule.rule for rule in result.rules if rule.outcome is RuleOutcome.UNKNOWN} >= {
+        RuleName.LOCATION,
+        RuleName.EXPERIENCE,
+    }
+
+
 async def test_board_never_runs_dry_and_rolls_its_window() -> None:
     total = len(demo_postings())
     async with SafeHttpClient(HttpClientConfig()) as http:

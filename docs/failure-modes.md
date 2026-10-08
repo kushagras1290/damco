@@ -7,6 +7,7 @@
 | Repeated source failures | `consecutive_failures ≥ 5` | Circuit opens for 6 h (`circuit_open_until`); visible in UI; `Sync now` or re-enable resets |
 | Board removed / bad token (404/4xx) | `SourceNotFoundError` (non-retryable) | Poll fails fast, error stored on the source |
 | Payload schema drift | `SourceParseError`; per-item contract violations collected in `skipped` | Whole fetch fails loudly on structural drift; bad items are skipped and counted |
+| Incremental/recent-items feed treated as a full listing | Older IDs disappear from the response even though the postings remain open | Current full-listing diff can close them prematurely; use a long interval and do not treat that source as authoritative for closure until an incremental-feed mode exists |
 | robots.txt disallows | `RobotsDisallowedError` | Non-retryable; recorded on the source |
 | SSRF attempt | `UnsafeUrlError` | Non-retryable; never fetched |
 | OpenAI timeout / 429 / 5xx | `IntelligenceUnavailableError` | Retried 6× with backoff, then the stage **degrades**: evaluation continues with deterministic signals |
@@ -19,4 +20,5 @@
 | Worker crash | Temporal | Workflows resume from history; activities retried |
 | API ↔ Temporal unavailable | `WorkflowServiceError` | Write endpoints needing Temporal return 503; worker re-creates polling workflows on boot |
 | DB unavailable | `/health/ready` | 503 readiness, pool pre-ping, statement timeout 15 s |
+| Redis unavailable | dependency health, Redis errors, shared circuit breaker | Reads continue with per-instance rate limits and cache bypass; requests may be slow until the circuit opens; writes using `Idempotency-Key` return 503 rather than risk a duplicate |
 | Snapshot storage failure | `StorageError` (retryable) | Activity retries |

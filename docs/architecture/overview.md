@@ -1,8 +1,10 @@
 # Architecture overview
 
 JobPulse is a **modular monolith + worker**: one FastAPI service and one Temporal worker share a
-framework-free domain package and a PostgreSQL database. There are no microservices, queues or
-caches beyond what Temporal provides.
+framework-free domain package and a PostgreSQL database. Temporal owns durable orchestration;
+Redis stores only ephemeral shared state (rate-limit windows, idempotency records, quotas and a
+short response cache). Raw fetch snapshots can use local disk or Cloudflare R2. PostgreSQL remains
+the system of record.
 
 ## Packages
 
@@ -28,23 +30,30 @@ SourceDiscoveryWorkflow
   FetchJobsActivity      fetch via SafeHttpClient, write staging snapshot, save checkpoint (ETag)
   NormalizeJobsActivity  pure normalization, staged to object storage
   StoreJobsActivity      upsert + dedup + versions + per-job raw snapshots, close vanished jobs
-  → start JobEvaluationWorkflow per new/changed job (id = job-eval-{job}-{hash}, ABANDON)
+  ListEvaluationTargets  subscribed (workspace, profile) pairs
+  → start JobEvaluationWorkflow per new/changed job and profile (ABANDON)
 
 JobEvaluationWorkflow
   Eligibility → Enrichment* → Embedding* → Ranking → Notification
   (* degradable: an LLM outage after retries does not block deterministic ranking)
 ```
 
-Payloads carry IDs and storage keys only, keeping workflow histories small.
+Evaluation workflow IDs contain job, profile and content hash, so duplicate starts for the same
+decision are idempotent. Payloads carry IDs and storage keys only, keeping workflow histories
+small.
 
 ## Data model
 
-`users, profiles, companies, sources, source_checkpoints, jobs, job_versions, raw_snapshots,
-eligibility_decisions, job_intelligence, match_scores, notifications, applications,
-workflow_runs, audit_events` — all with UUIDv7 primary keys.
+The catalogue is shared: `companies, sources, source_checkpoints, jobs, job_versions,
+raw_snapshots, job_intelligence`. Tenant state is workspace-scoped:
+`memberships, profiles, source_subscriptions, profile_jobs, eligibility_decisions,
+match_scores, notifications, applications, workflow_runs, audit_events`. Identity and lifecycle
+tables include `users, identities, invitations, email_login_tokens, billing_events`.
 
-Decision tables are **append-only**; the latest row wins. `jobs` carries denormalised
-`eligibility_status`, `match_score` and `workflow_state` for fast filtering.
+Decision tables are **append-only**; the latest row wins. `profile_jobs` carries denormalised
+per-profile eligibility, score and workflow state for fast filtering. PostgreSQL row-level
+security is enabled and forced on tenant tables; a transaction with no workspace or explicit
+system scope sees no tenant data.
 
 ### Indexes
 
@@ -67,6 +76,10 @@ re-evaluated or re-notified.
 
 ## Request path (web)
 
-Browser → Next.js route `/api/backend/[...path]` → validates path against an allowlist → reads
-the Auth.js session → mints a 5-minute HS256 JWT (`sub`, `role`, `aud`, `iss`) → FastAPI verifies
-and authorises. The browser never sees a backend token.
+Browser → Next.js route `/api/backend/[...path]` → validates the path against an allowlist →
+reads the Auth.js session and selected-workspace cookie → mints a 5-minute Ed25519 JWT
+(`sub`, optional `wid`, `aud`, `iss`; deliberately no role) → FastAPI verifies the signature,
+resolves the identity and membership, verifies that the caller belongs to `wid`, and applies that
+workspace's RLS scope. Anonymous visitors receive a pseudonymous signed subject and can only read
+the public demo workspace. The browser never sees a reusable backend token, and the API holds
+public verification keys only.

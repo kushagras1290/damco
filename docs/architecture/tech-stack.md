@@ -2,6 +2,12 @@
 
 > Event-driven AI job opportunity radar for discovering, qualifying, ranking, and notifying users about relevant jobs with explainable decisions.
 
+> **Historical planning document.** This captured the broad design space before the runnable
+> vertical slice. It is intentionally not the source of truth for delivered scope or current
+> behaviour, and some provider/deployment sections are unverified. Start with the
+> [README](../../README.md), [architecture overview](overview.md),
+> [trade-offs](../tradeoffs.md), and [ADR 0004](../adr/0004-implementation-deviations.md).
+
 ---
 
 ## 1. Architecture Goals

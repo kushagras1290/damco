@@ -1,6 +1,13 @@
 # ADR 0006 — Authentication and authorization
 
-**Status:** Accepted (supersedes the shared-HS256-secret design in the first release)
+**Status:** Accepted for asymmetric service tokens; identity and authorization clauses amended
+by [ADR 0008](0008-multi-tenancy-with-row-level-security.md)
+
+> **Current state:** Clauses 2–5 below record the original single-user decision. Phase 2 now
+> supports GitHub, Google, Microsoft and email identities. Tokens carry an immutable provider
+> subject and optional workspace hint, never a role. The API verifies membership and resolves
+> the role from PostgreSQL on every request; `OWNER_GITHUB_IDS` is only a platform-admin
+> bootstrap allowlist. The Ed25519 design in clause 1 remains current.
 
 ## Context
 The web app (Auth.js + GitHub OAuth) calls the API on behalf of the user. The first release

@@ -1,8 +1,12 @@
-# ADR 0004 — Deviations from the original tech-stack document
+# ADR 0004 — Decisions that changed during implementation
 
 **Status:** Accepted
 
-| Topic | Spec | Implemented | Reason |
+The initial stack document was a planning input, not a contract. These decisions changed as
+the vertical slice was implemented and tested. This record explains the evidence behind the
+changes; current behaviour is documented in the README and architecture overview.
+
+| Topic | Initial plan | Implemented | Reason |
 |---|---|---|---|
 | `JobSource.discover` return type | `list[RawJob]` | `DiscoveryResult` (jobs + updated checkpoint + raw payload + skipped items) | Conditional GETs (ETag/Last-Modified) and raw snapshots need more than the job list. |
 | Domain package layout | several `packages/python/*` packages | one `jobpulse_core` package with sub-packages | Single installable unit; same module boundaries, simpler dependency graph. |

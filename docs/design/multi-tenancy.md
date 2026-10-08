@@ -1,6 +1,6 @@
 # Design: multi-tenant JobPulse (Phase 2)
 
-**Status:** Accepted (2026-10-07). Decisions:
+**Status:** Delivered as a Phase 2 extension (2026-10-07). Decisions:
 
 | Question | Decision |
 |---|---|
@@ -67,14 +67,17 @@ row-level security.**
    idempotency per user, and cache entries per workspace (the dashboard becomes workspace-specific).
 
 ## Identity and access
-- Today: GitHub only, owner allowlist. SaaS: open sign-up with GitHub, Google, Microsoft Entra ID
-  or an email magic link (Resend); a personal workspace is created on first sign-in, others are
-  joined by invitation. Users are keyed by an internal id; provider accounts link to it.
+- Sign-in supports GitHub and, when configured, Google, Microsoft Entra ID or an email magic
+  link (Resend; local development writes the link to the API log). `SIGNUP_POLICY` controls open,
+  invite-only or closed account creation. A personal workspace is created on first sign-in;
+  team workspaces are joined by invitation. Users are keyed by an internal id and immutable
+  provider subjects link to it.
 - Roles per workspace: **owner** (billing, delete), **admin** (members, sources), **member**
   (profiles, applications). The API derives the role from `memberships`, never from the token.
 - The web→API token keeps `sub` (user) and adds `wid` (the selected workspace); the API verifies
   membership on every request. A workspace switcher lives in the UI.
-- The current `OWNER_GITHUB_IDS` becomes a **platform admin** allowlist (support / ops only).
+- `OWNER_GITHUB_IDS` is now a **platform admin** bootstrap allowlist (support / ops only), not
+  the source of workspace authorization.
 
 ## Plans and limits
 | Limit | Free | Pro | Team |
@@ -103,10 +106,10 @@ Keys live only in the API's environment (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET
 `RAZORPAY_WEBHOOK_SECRET`; Stripe equivalents later).
 
 ## Migration of existing data
-One expand/contract migration: create a "Default" workspace, attach existing users (owners as
-workspace owners), profiles and tenant rows to it, add subscriptions for every existing source,
-then make `workspace_id` NOT NULL and enable RLS. No downtime; the old single-tenant mode is
-simply one workspace.
+The expand phase created a "Default" workspace, attached existing users, profiles and tenant
+rows to it, added subscriptions for existing sources, made `workspace_id` non-null and enabled
+RLS. The old single-tenant data is therefore one workspace. The remaining contract cleanup is
+to remove the unused legacy eligibility and score columns from `jobs`.
 
 ## Data protection
 - Per-workspace export (JSON) and hard delete (cascades tenant tables; catalogue untouched).
