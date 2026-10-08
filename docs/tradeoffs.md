@@ -22,8 +22,10 @@ carry `profile_id`, so multi-profile scoring is additive.
 **Asymmetric web → API tokens.** Ed25519 keys mean the API can verify but never mint; the
 cost is managing a key pair and a rotation procedure (docs/runbook.md).
 
-**In-process rate limiting.** Correct for one API instance; with more instances, rate-limit at
-the edge (Render / Cloudflare).
+**Redis-backed rate limiting.** An exact sliding-window log in Redis is shared by every API
+instance and costs one Redis round trip per request; if Redis is down, each instance falls back
+to its own in-memory window (limits become per instance) rather than failing requests. Volumetric
+abuse should still be stopped at the edge (Render / Cloudflare) before it reaches the API.
 
 **Staging snapshots for every fetch.** Costs object-storage writes, but keeps Temporal payloads
 tiny and makes every decision replayable from the exact bytes that were fetched.
