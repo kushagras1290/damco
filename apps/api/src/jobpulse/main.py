@@ -20,7 +20,18 @@ from redis.asyncio import Redis
 from starlette.datastructures import Headers
 from starlette.types import Scope
 
-from jobpulse.api.routes import applications, decisions, events, jobs, profile, runs, sources, system, workspaces
+from jobpulse.api.routes import (
+    applications,
+    billing,
+    decisions,
+    events,
+    jobs,
+    profile,
+    runs,
+    sources,
+    system,
+    workspaces,
+)
 from jobpulse.core.cache import ResponseCache
 from jobpulse.core.circuit import CircuitBreaker
 from jobpulse.core.config import Settings, get_settings
@@ -58,6 +69,7 @@ ROUTERS = (
     decisions.router,
     events.router,
     workspaces.router,
+    billing.router,
     system.router,
 )
 

@@ -119,6 +119,20 @@ class AccountRepository:
         statement = select(func.count()).select_from(Membership).where(Membership.role == "owner")
         return int((await self._session.execute(statement)).scalar_one())
 
+    async def workspace(self, workspace_id: uuid.UUID) -> Workspace | None:
+        return await self._session.get(Workspace, workspace_id)
+
+    async def is_member(self, workspace_id: uuid.UUID, user_id: uuid.UUID) -> bool:
+        statement = select(Membership.user_id).where(
+            Membership.workspace_id == workspace_id, Membership.user_id == user_id
+        )
+        return (await self._session.execute(statement)).first() is not None
+
+    async def member_count_in(self, workspace_id: uuid.UUID) -> int:
+        """System scope: members of a specific workspace."""
+        statement = select(func.count()).select_from(Membership).where(Membership.workspace_id == workspace_id)
+        return int((await self._session.execute(statement)).scalar_one())
+
     async def member_count(self) -> int:
         return int((await self._session.execute(select(func.count()).select_from(Membership))).scalar_one())
 

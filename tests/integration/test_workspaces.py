@@ -55,6 +55,13 @@ def token_of(invite_url: str) -> str:
     return invite_url.rsplit("/", 1)[1]
 
 
+async def on_team_plan(api: httpx.AsyncClient, workspace_id: str) -> None:
+    """Seats beyond one need the Team plan (set here by a platform admin)."""
+    admin = as_user(OWNER_ID, "octocat")
+    response = await api.patch(f"/api/v1/admin/workspaces/{workspace_id}/plan", json={"plan": "team"}, headers=admin)
+    assert response.status_code == 200, response.text
+
+
 async def invite_token(api: httpx.AsyncClient, headers: dict[str, str], role: str = "member") -> str:
     issued = await api.post("/api/v1/workspace/invitations", json={"role": role}, headers=headers)
     assert issued.status_code == 201, issued.text
@@ -91,6 +98,7 @@ async def test_concurrent_first_requests_create_one_account(api: httpx.AsyncClie
 async def test_invite_accept_and_roles(api: httpx.AsyncClient) -> None:
     alice = as_user(ALICE, "alice")
     workspace = (await api.post("/api/v1/workspaces", json={"name": "Acme Talent"}, headers=alice)).json()
+    await on_team_plan(api, workspace["id"])
     alice_team = as_user(ALICE, "alice", workspace["id"])
     assert workspace["role"] == "owner"
 
@@ -147,6 +155,7 @@ async def test_last_owner_is_protected(api: httpx.AsyncClient) -> None:
 async def test_members_can_leave_and_lose_access(api: httpx.AsyncClient) -> None:
     alice = as_user(ALICE, "alice")
     workspace = (await api.post("/api/v1/workspaces", json={"name": "Team"}, headers=alice)).json()
+    await on_team_plan(api, workspace["id"])
     alice_team = as_user(ALICE, "alice", workspace["id"])
     token = token_of(
         (await api.post("/api/v1/workspace/invitations", json={}, headers=alice_team)).json()["invite_url"]
@@ -161,6 +170,7 @@ async def test_members_can_leave_and_lose_access(api: httpx.AsyncClient) -> None
 
 async def test_expired_and_revoked_invitations_fail(api: httpx.AsyncClient, ctx: AppContext) -> None:
     alice = as_user(ALICE, "alice")
+    await on_team_plan(api, (await api.get("/api/v1/me", headers=alice)).json()["workspace"]["id"])
     first = (await api.post("/api/v1/workspace/invitations", json={}, headers=alice)).json()
     second = (await api.post("/api/v1/workspace/invitations", json={}, headers=alice)).json()
     assert (await api.delete(f"/api/v1/workspace/invitations/{second['id']}", headers=alice)).status_code == 204

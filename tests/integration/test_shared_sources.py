@@ -115,7 +115,11 @@ async def test_shared_settings_need_sole_follower_or_platform_admin(api: httpx.A
     assert blocked.status_code == 409
     admin = {"Authorization": f"Bearer {make_token(OWNER_ID)}"}
     await api.post("/api/v1/sources", json=body, headers=admin)  # Default workspace follows too
-    allowed = await api.patch(f"/api/v1/sources/{source_id}", json={"poll_interval_seconds": 600}, headers=admin)
+    allowed = await api.patch(
+        f"/api/v1/sources/{source_id}",
+        json={"min_poll_interval_seconds": 300, "poll_interval_seconds": 600},
+        headers=admin,
+    )
     assert allowed.json()["poll_interval_seconds"] == 600
 
 

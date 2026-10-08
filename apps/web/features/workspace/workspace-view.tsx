@@ -11,7 +11,10 @@ import { Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, Input
 import { TBody, TD, TH, THead, TR, Table } from "@/components/ui/table";
 import {
   useAcceptInvitation,
+  useBilling,
   useCan,
+  useCancelSubscription,
+  useCheckout,
   useChangeMemberRole,
   useCreateWorkspace,
   useInvitations,
@@ -208,6 +211,84 @@ function InviteCard({ isOwner }: { isOwner: boolean }) {
   );
 }
 
+const PLAN_COPY: Record<"free" | "pro" | "team", { title: string; blurb: string }> = {
+  free: { title: "Free", blurb: "5 boards · 15-minute polling · 1 seat" },
+  pro: { title: "Pro", blurb: "50 boards · 2-minute polling · 1 seat" },
+  team: { title: "Team", blurb: "500 boards · 1-minute polling · 25 seats" },
+};
+
+function UsageBar({ label, used, limit }: { label: string; used: number; limit: number }) {
+  const ratio = limit > 0 ? Math.min(1, used / limit) : 1;
+  return (
+    <div className="text-sm">
+      <div className="flex justify-between">
+        <span>{label}</span>
+        <span className="tabular-nums text-muted-foreground">
+          {used} / {limit}
+        </span>
+      </div>
+      <div className="mt-1 h-1.5 rounded-full bg-muted">
+        <div
+          className={ratio >= 1 ? "h-full rounded-full bg-destructive/70" : "h-full rounded-full bg-primary/70"}
+          style={{ width: `${ratio * 100}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function BillingCard({ isOwner }: { isOwner: boolean }) {
+  const billing = useBilling(true);
+  const checkout = useCheckout();
+  const cancel = useCancelSubscription();
+  if (billing.isPending) return <LoadingRows rows={3} />;
+  if (billing.error) return <ErrorState error={billing.error} />;
+  const data = billing.data;
+  const paidActive = data.subscription_status === "active" || data.subscription_status === "authenticated";
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Plan &amp; billing</CardTitle>
+        <CardDescription>
+          {PLAN_COPY[data.plan].title} plan · {PLAN_COPY[data.plan].blurb}
+          {data.grace_until ? ` · paid features until ${new Date(data.grace_until).toLocaleDateString()}` : ""}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <UsageBar label="Followed boards" used={data.usage.followed_sources} limit={data.limits.followed_sources} />
+        <UsageBar label="Seats (incl. pending invites)" used={data.usage.members} limit={data.limits.members} />
+        <p className="text-xs text-muted-foreground">
+          Fastest polling: every {Math.round(data.limits.min_poll_interval_seconds / 60)} min · re-evaluations:{" "}
+          {data.limits.reevaluations_per_day}/day
+        </p>
+        {!data.billing_enabled ? (
+          <p className="text-sm text-muted-foreground">Online payments are not enabled on this deployment.</p>
+        ) : isOwner ? (
+          <div className="flex flex-wrap gap-2">
+            {data.purchasable
+              .filter((plan) => plan !== data.plan)
+              .map((plan) => (
+                <Button key={plan} onClick={() => checkout.mutate(plan)} disabled={checkout.isPending}>
+                  Upgrade to {PLAN_COPY[plan].title}
+                </Button>
+              ))}
+            {paidActive ? (
+              <Button variant="ghost" onClick={() => cancel.mutate()} disabled={cancel.isPending || cancel.isSuccess}>
+                {cancel.isSuccess ? "Cancels at period end" : "Cancel subscription"}
+              </Button>
+            ) : null}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">Ask a workspace owner to change the plan.</p>
+        )}
+        <p className="text-xs text-muted-foreground">Payments are processed securely by Razorpay (UPI, cards, netbanking).</p>
+        {checkout.error ? <ErrorState error={checkout.error} /> : null}
+        {cancel.error ? <ErrorState error={cancel.error} /> : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 function CreateWorkspaceCard() {
   const create = useCreateWorkspace();
   const switchTo = useSwitchTo();
@@ -293,6 +374,7 @@ export function WorkspaceView() {
             </CardContent>
           </Card>
         ) : null}
+        {canSeeMembers ? <BillingCard isOwner={isOwner} /> : null}
         {isAdmin ? <InviteCard isOwner={isOwner} /> : null}
         <div className="grid content-start gap-4">
           {isOwner && me.workspace ? <RenameCard name={me.workspace.name} /> : null}

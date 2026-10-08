@@ -89,12 +89,34 @@ class Workspace(Base):
     slug: Mapped[str] = mapped_column(String(63), unique=True)
     plan: Mapped[str] = mapped_column(String(20), server_default="free")
     personal: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    # Billing: updated only from verified provider webhooks (or by a platform admin).
+    billing_provider: Mapped[str | None] = mapped_column(String(20))
+    subscription_id: Mapped[str | None] = mapped_column(String(100), unique=True)
+    subscription_status: Mapped[str | None] = mapped_column(String(20))
+    current_period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    grace_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _created()
 
     __table_args__ = (
         CheckConstraint(f"plan IN ({_in(PLANS)})", name="plan_valid"),
+        CheckConstraint(
+            "billing_provider IS NULL OR billing_provider IN ('razorpay', 'stripe')", name="billing_provider_valid"
+        ),
         CheckConstraint("slug ~ '^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$'", name="slug_format"),
     )
+
+
+class BillingEvent(Base):
+    """Every verified provider webhook, once (PK = provider event id): idempotent processing."""
+
+    __tablename__ = "billing_events"
+
+    provider: Mapped[str] = mapped_column(String(20), primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(100))
+    workspace_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("workspaces.id", ondelete="SET NULL"))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    received_at: Mapped[datetime] = _created()
 
 
 class Membership(Base):

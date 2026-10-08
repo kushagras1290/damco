@@ -79,11 +79,10 @@ row-level security.**
 ## Plans and limits
 | Limit | Free | Pro | Team |
 |---|---|---|---|
-| Profiles | 1 | 3 | 25 |
-| Followed sources | 5 | 50 | 500 |
-| Min poll interval | 15 min | 2 min | 1 min |
-| AI enrichment / day | 50 | 1,000 | 10,000 |
-| Members | 1 | 1 | 25 |
+| Followed boards | 5 | 50 | 500 |
+| Fastest polling | 15 min | 2 min | 1 min |
+| Seats (incl. pending invites) | 1 | 1 | 25 |
+| Manual re-evaluations / day | 20 | 200 | 2,000 |
 
 Enforced in the API (`usage_counters` + Redis) with clear 402/429 problem responses. A
 platform admin can always set `workspaces.plan` (sales-led deals, trials).
@@ -121,7 +120,9 @@ simply one workspace.
    evaluation fan-out. Shared settings (name, intervals) editable by the sole follower or a
    platform admin; follower counts never exposed to tenants.
 4. ✅ Workspace-scoped realtime (per-tenant event routing, fail-closed), workspace-keyed cache.
-5. Plans and limits, then Razorpay subscriptions (checkout, webhooks, grace period); Stripe after.
+5. ✅ Plans and limits (boards, poll floor, seats, daily re-evaluations; 402 `plan_limit`),
+   Razorpay subscriptions (hosted checkout, verified idempotent webhooks, 3-day grace,
+   cancel at period end), platform-admin plan override. Stripe remains a second provider.
 6. Sign-up flow with Google, Microsoft Entra ID and email magic link; export/delete.
 
 ## Risks

@@ -21,7 +21,8 @@ from jobpulse.repositories.activity import AuditRepository
 from jobpulse.repositories.sources import SourceRepository
 from jobpulse.repositories.tenancy import SubscriptionRepository
 from jobpulse.services import temporal as temporal_service
-from jobpulse.services.accounts import Account
+from jobpulse.services.accounts import Account, WorkspaceRole
+from jobpulse.services.plans import PlanLimitError, limits_for, require_capacity
 from jobpulse.services.temporal import WorkflowServiceError
 from jobpulse_core.domain.models import SourceDefinition, SourceKind
 from jobpulse_core.errors import SourceFetchError, UnsafeUrlError, ValidationError
@@ -30,6 +31,7 @@ from jobpulse_core.sources import required_hosts
 
 router = APIRouter(prefix="/api/v1/sources", tags=["sources"])
 logger = structlog.get_logger(__name__)
+INTERVAL_FIELDS = ("poll_interval_seconds", "min_poll_interval_seconds", "max_poll_interval_seconds")
 
 
 async def _apply_polling(client: Client, settings: Settings, source_id: str, *, enabled: bool) -> None:
@@ -139,6 +141,14 @@ async def create_source(
     definition = await _validate_definition(body, ctx)
     repo = SourceRepository(session)
     subscriptions = SubscriptionRepository(session)
+    plan = account.require(WorkspaceRole.ADMIN).plan
+    limits = limits_for(plan)
+    require_capacity(plan, what="followed boards", used=await subscriptions.count(), limit=limits.followed_sources)
+    # New boards poll no faster than the plan allows (raised, not rejected, so defaults just work).
+    floor = limits.min_poll_interval_seconds
+    min_interval = max(body.min_poll_interval_seconds, floor)
+    max_interval = max(body.max_poll_interval_seconds, min_interval)
+    poll_interval = min(max(body.poll_interval_seconds, min_interval), max_interval)
     source = await repo.get_by_board(definition, for_update=True)
     created = source is None
     if source is None:
@@ -149,9 +159,9 @@ async def create_source(
                     company_id=company.id,
                     name=body.name,
                     definition=definition,
-                    poll_interval_seconds=body.poll_interval_seconds,
-                    min_poll_interval_seconds=body.min_poll_interval_seconds,
-                    max_poll_interval_seconds=body.max_poll_interval_seconds,
+                    poll_interval_seconds=poll_interval,
+                    min_poll_interval_seconds=min_interval,
+                    max_poll_interval_seconds=max_interval,
                 )
         except IntegrityError:
             # Another workspace added the same board concurrently: follow theirs.
@@ -195,6 +205,13 @@ async def update_source(
             total, _ = await SubscriptionRepository(session).follower_counts(source.id)
         if total > 1 and not account.principal.platform_admin:
             raise ConflictError("this board is shared with other workspaces; only pausing is available")
+        floor = limits_for(account.require(WorkspaceRole.ADMIN).plan).min_poll_interval_seconds
+        requested = [shared_fields[key] for key in INTERVAL_FIELDS if key in shared_fields]
+        if any(value < floor for value in requested) and not account.principal.platform_admin:
+            raise PlanLimitError(
+                f"your plan polls at most every {floor // 60} minutes; upgrade for faster polling",
+                context={"min_poll_interval_seconds": floor},
+            )
         low = shared_fields.get("min_poll_interval_seconds", source.min_poll_interval_seconds)
         high = shared_fields.get("max_poll_interval_seconds", source.max_poll_interval_seconds)
         current = shared_fields.get("poll_interval_seconds", min(max(source.poll_interval_seconds, low), high))

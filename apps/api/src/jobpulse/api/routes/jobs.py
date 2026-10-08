@@ -6,7 +6,7 @@ import secrets
 import uuid
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Query, Request, status
 
 from jobpulse.api.deps import Ctx, Paging, Temporal
 from jobpulse.api.mappers import application_out, job_summary
@@ -32,6 +32,8 @@ from jobpulse.repositories.activity import ApplicationRepository, AuditRepositor
 from jobpulse.repositories.decisions import DecisionRepository
 from jobpulse.repositories.jobs import JobFilters, JobRepository, JobView, SortKey
 from jobpulse.services import temporal as temporal_service
+from jobpulse.services.accounts import WorkspaceRole
+from jobpulse.services.plans import consume_daily_quota, limits_for
 from jobpulse_core.contracts import JobRef
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
@@ -134,6 +136,7 @@ async def get_snapshot(job_id: uuid.UUID, _: Viewer, session: Session, ctx: Ctx)
 
 @router.post("/{job_id}/evaluate", response_model=ActionAccepted, status_code=status.HTTP_202_ACCEPTED)
 async def rerun_job(
+    request: Request,
     job_id: uuid.UUID,
     account: Member,
     session: Session,
@@ -143,6 +146,14 @@ async def rerun_job(
 ) -> ActionAccepted:
     if await JobRepository(session).get(job_id) is None:
         raise NotFoundError("job not found")
+    workspace = account.require(WorkspaceRole.MEMBER)
+    await consume_daily_quota(
+        request.app.state.redis,
+        name="reevaluations",
+        workspace_id=workspace.id,
+        plan=workspace.plan,
+        limit=limits_for(workspace.plan).reevaluations_per_day,
+    )
     workflow_id = await temporal_service.rerun_job(
         client,
         ctx.settings,

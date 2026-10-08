@@ -29,6 +29,7 @@ from jobpulse.core.errors import AuthenticationError, ConflictError, NotFoundErr
 from jobpulse.core.security import Principal
 from jobpulse.db.models import DEFAULT_WORKSPACE_ID, Profile, User, Workspace
 from jobpulse.repositories.accounts import AccountRepository, WorkspaceMembership
+from jobpulse.services.plans import effective_plan, limits_for, require_capacity
 from jobpulse_core.domain.models import EligibilityPolicy
 
 logger = structlog.get_logger(__name__)
@@ -102,7 +103,9 @@ def _summary(membership: WorkspaceMembership) -> WorkspaceSummary:
         id=ws.id,
         name=ws.name,
         slug=ws.slug,
-        plan=ws.plan,
+        plan=effective_plan(
+            ws.plan, subscription_status=ws.subscription_status, grace_until=ws.grace_until, now=datetime.now(tz=UTC)
+        ).value,
         personal=ws.personal,
         role=WorkspaceRole.parse(membership.role),
     )
@@ -201,8 +204,13 @@ async def issue_invitation(
     inviter = account.require(WorkspaceRole.ADMIN)
     if role > inviter.role:
         raise PermissionDeniedError("you cannot invite someone with a higher role than yours")
+    now = datetime.now(tz=UTC)
+    seats = await repo.member_count() + len(await repo.pending_invitations(now))
+    require_capacity(
+        inviter.plan, what="members (including pending invitations)", used=seats, limit=limits_for(inviter.plan).members
+    )
     token = secrets.token_urlsafe(INVITATION_TOKEN_BYTES)
-    expires_at = datetime.now(tz=UTC) + INVITATION_TTL
+    expires_at = now + INVITATION_TTL
     invitation = await repo.create_invitation(
         email=email, role=role.label, token_hash=hash_token(token), invited_by=account.user_id, expires_at=expires_at
     )
@@ -221,6 +229,15 @@ async def accept_invitation(repo: AccountRepository, account: Account, token: st
         if invitation.accepted_by == account.user_id:
             return invitation.workspace_id  # idempotent re-click
         raise ConflictError("invitation already used")
+    workspace = await repo.workspace(invitation.workspace_id)
+    if workspace is None:
+        raise NotFoundError("invitation not found or expired")
+    plan = effective_plan(
+        workspace.plan, subscription_status=workspace.subscription_status, grace_until=workspace.grace_until, now=now
+    )
+    if not await repo.is_member(invitation.workspace_id, account.user_id):
+        members = await repo.member_count_in(invitation.workspace_id)
+        require_capacity(plan, what="members", used=members, limit=limits_for(plan).members)
     await repo.add_membership(workspace_id=invitation.workspace_id, user_id=account.user_id, role=invitation.role)
     await repo.mark_accepted(invitation, user_id=account.user_id, now=now)
     logger.info("invitation.accepted", workspace_id=str(invitation.workspace_id), user_id=str(account.user_id))

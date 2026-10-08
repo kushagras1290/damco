@@ -26,7 +26,7 @@ describe("backendPath", () => {
     expect(backendPath(segments)).toBe(expected);
   });
 
-  it.each([[[]], [["admin"]], [["jobs", ".."]], [["jobs", "a%2F..%2Fb"]], [["jobs", "a", "b", "c", "d"]], [["health", "ready"]]])(
+  it.each([[[]], [["internal"]], [["jobs", ".."]], [["jobs", "a%2F..%2Fb"]], [["jobs", "a", "b", "c", "d"]], [["health", "ready"]]])(
     "rejects %j",
     (segments) => {
       expect(backendPath(segments)).toBeNull();

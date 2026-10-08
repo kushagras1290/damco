@@ -37,6 +37,17 @@
 9. **Deploys**: add the `production` environment secrets listed in the README, then set the
    repository variable `DEPLOY_ENABLED=true`.
 
+### Billing (Razorpay)
+
+1. Razorpay dashboard → *Subscriptions → Plans*: create monthly **Pro** and **Team** plans; put
+   their ids in `RAZORPAY_PLAN_PRO` / `RAZORPAY_PLAN_TEAM`.
+2. *Account & Settings → API keys*: `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` (API only).
+3. *Webhooks*: URL `https://<api-domain>/api/v1/webhooks/razorpay`, a strong secret
+   (`RAZORPAY_WEBHOOK_SECRET`), events `subscription.*`. Plans change **only** from verified
+   webhooks (HMAC-SHA256 over the raw body; deduplicated by `x-razorpay-event-id`).
+4. Test with test-mode keys first; a failed charge keeps paid limits for a 3-day grace period.
+5. Sales-led deals: a platform admin calls `PATCH /api/v1/admin/workspaces/{id}/plan`.
+
 ## Deploy order (automated by `deploy.yml`)
 
 migrate → API → worker → web → smoke tests. Consequences:
@@ -79,6 +90,7 @@ migrate → API → worker → web → smoke tests. Consequences:
 | `llm_budget_exhausted_total` | Daily LLM cap hit; enrichment degraded to deterministic | Raise the cap or accept; re-evaluate jobs later |
 | `notifications_sent_total{outcome="failed"}` | Email/webhook failures | Check Resend status / webhook receiver |
 | `http_requests_total{status="5xx"}` | API errors | Sentry + logs by `request_id` |
+| `billing.webhook_unmatched` log | Verified webhook for an unknown subscription | Check Razorpay dashboard; plan ids/env |
 | `circuit_open{name="redis"} == 1` | Redis unreachable; limits per instance, cache bypassed, keyed writes 503 | Check Key Value status; clients retry keyed writes automatically |
 | `rate_limit_backend_fallbacks_total` rising | Decisions served by the local fallback limiter | Same as above |
 | `response_cache_total{result="hit"}` ratio low | Cache not absorbing dashboard load | Check TTL (`CACHE_TTL_SECONDS`) and Redis health |

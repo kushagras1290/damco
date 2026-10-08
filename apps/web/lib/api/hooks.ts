@@ -8,6 +8,7 @@ import type {
   ActionAccepted,
   Application,
   ApplicationStatus,
+  Billing,
   DashboardStats,
   Decision,
   JobDetail,
@@ -229,3 +230,25 @@ export const useCreateWorkspace = () =>
 
 export const useAcceptInvitation = () =>
   useMutation({ mutationFn: (token: string) => api.post<{ workspace_id: string }>("/invitations/accept", { token }) });
+
+// ------------------------------------------------------------------ billing
+
+export const useBilling = (enabled: boolean) =>
+  useQuery({ queryKey: ["workspace", "billing"], queryFn: () => api.get<Billing>("/billing"), enabled });
+
+/** Starts a Razorpay subscription and hands the browser to Razorpay's hosted checkout. */
+export const useCheckout = () =>
+  useMutation({
+    mutationFn: (plan: "pro" | "team") => api.post<{ checkout_url: string }>("/billing/checkout", { plan }),
+    onSuccess: ({ checkout_url }) => {
+      if (checkout_url.startsWith("https://")) window.location.assign(checkout_url);
+    },
+  });
+
+export function useCancelSubscription() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<{ status: string }>("/billing/cancel"),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["workspace", "billing"] }),
+  });
+}

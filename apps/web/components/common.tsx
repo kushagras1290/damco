@@ -25,7 +25,9 @@ export function ErrorState({ error }: { error: unknown }) {
         ? "You need the Owner role to do this."
         : error.rateLimited
           ? `Too many requests - try again in ${error.retryAfterSeconds ?? 60}s.`
-          : error.message
+          : error.status === 402
+            ? `${error.message} (Workspace → Plan & billing).`
+            : error.message
       : "Something went wrong.";
   return (
     <div role="alert" className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">

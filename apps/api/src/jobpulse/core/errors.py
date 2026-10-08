@@ -20,6 +20,8 @@ MAX_VALIDATION_ERRORS = 20
 class ApiError(JobPulseError):
     status_code: int = 500
     code: str = "internal_error"
+    # Only errors that opt in expose their context to clients (e.g. which plan limit was hit).
+    public_context: bool = False
 
 
 class AuthenticationError(ApiError):
@@ -81,7 +83,8 @@ def install_exception_handlers(app: FastAPI) -> None:
     async def _api_error(request: Request, exc: ApiError) -> JSONResponse:
         if exc.status_code >= 500:
             logger.error("api.error", code=exc.code, error=exc.message)
-        return problem_response(exc.status_code, exc.code, exc.message, request)
+        extra = dict(exc.context) if exc.public_context else None
+        return problem_response(exc.status_code, exc.code, exc.message, request, extra=extra)
 
     @app.exception_handler(DomainValidationError)
     async def _domain_validation(request: Request, exc: DomainValidationError) -> JSONResponse:

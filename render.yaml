@@ -38,6 +38,11 @@ services:
       - { key: R2_SECRET_ACCESS_KEY, sync: false }
       - { key: R2_BUCKET, sync: false }
       - { key: SENTRY_DSN, sync: false }
+      - { key: RAZORPAY_KEY_ID, sync: false }
+      - { key: RAZORPAY_KEY_SECRET, sync: false }
+      - { key: RAZORPAY_WEBHOOK_SECRET, sync: false }
+      - { key: RAZORPAY_PLAN_PRO, sync: false }
+      - { key: RAZORPAY_PLAN_TEAM, sync: false }
 
   - type: worker
     name: jobpulse-worker

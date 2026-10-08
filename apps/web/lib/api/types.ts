@@ -314,3 +314,14 @@ export interface Problem {
   detail: string;
   errors?: { loc: string[]; msg: string }[];
 }
+
+export interface Billing {
+  plan: "free" | "pro" | "team";
+  billing_enabled: boolean;
+  purchasable: ("pro" | "team")[];
+  limits: { followed_sources: number; min_poll_interval_seconds: number; members: number; reevaluations_per_day: number };
+  usage: { followed_sources: number; members: number };
+  subscription_status: string | null;
+  current_period_end: string | null;
+  grace_until: string | null;
+}

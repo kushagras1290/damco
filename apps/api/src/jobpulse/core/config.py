@@ -159,6 +159,17 @@ class Settings(BaseSettings):
     webhook_signing_secret: SecretStr | None = None
     dashboard_base_url: str = "http://localhost:3000"
 
+    # --- billing (Razorpay; plans change only through verified webhooks) ---------
+    razorpay_key_id: str | None = None
+    razorpay_key_secret: SecretStr | None = None
+    razorpay_webhook_secret: SecretStr | None = None
+    razorpay_plan_pro: str | None = None  # Razorpay plan id, e.g. plan_XXXXXXXXXXXXXX
+    razorpay_plan_team: str | None = None
+    razorpay_api_base: str = "https://api.razorpay.com/v1"
+    razorpay_timeout_seconds: Annotated[float, Field(gt=0, le=60)] = 15.0
+    # Billing cycles per subscription (monthly plans: 120 = 10 years, effectively open-ended).
+    razorpay_total_count: Annotated[int, Field(ge=1, le=1200)] = 120
+
     # --- observability ----------------------------------------------------------
     sentry_dsn: SecretStr | None = None
     sentry_traces_sample_rate: Annotated[float, Field(ge=0, le=1)] = 0.0
@@ -214,6 +225,13 @@ class Settings(BaseSettings):
             if self.storage_backend != "r2":
                 msg = "production requires STORAGE_BACKEND=r2"
                 raise ValueError(msg)
+        razorpay = (self.razorpay_key_id, self.razorpay_key_secret, self.razorpay_webhook_secret)
+        if any(razorpay) and not all(razorpay):
+            msg = "Razorpay billing needs RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET and RAZORPAY_WEBHOOK_SECRET together"
+            raise ValueError(msg)
+        if not self.razorpay_api_base.startswith("https://"):
+            msg = "RAZORPAY_API_BASE must be https://"
+            raise ValueError(msg)
         if self.temporal_api_key is not None and not self.temporal_tls:
             msg = "TEMPORAL_API_KEY requires TEMPORAL_TLS=true"
             raise ValueError(msg)
@@ -273,6 +291,10 @@ class Settings(BaseSettings):
             output_price_per_million=self.openai_output_price_per_million,
             embedding_price_per_million=self.openai_embedding_price_per_million,
         )
+
+    @property
+    def billing_enabled(self) -> bool:
+        return self.razorpay_key_id is not None and bool(self.razorpay_plan_pro or self.razorpay_plan_team)
 
 
 @lru_cache(maxsize=1)
