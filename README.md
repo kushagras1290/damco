@@ -1,6 +1,6 @@
 # JobPulse
 
-Event-driven AI job opportunity radar: discovers jobs from ATS boards and feeds, applies
+Event driven AI job opportunity radar: discovers jobs from ATS boards and feeds, applies
 **deterministic hard-eligibility rules**, uses an LLM **only for ambiguous facts**, ranks
 matches with an **explainable** score, and notifies you — with every decision auditable and
 replayable.
